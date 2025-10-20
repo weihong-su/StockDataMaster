@@ -144,6 +144,14 @@ sys.path.insert(0, parent_dir)  # 添加父目录以支持包导入
 - INFO: 正常操作流程（连接成功、数据获取成功、缓存命中）
 - WARNING: 可恢复的错误（单次请求失败但会重试、数据源切换）
 - ERROR: 严重错误（所有数据源失败、缓存损坏、配置错误）
+- **编码规范**: 日志文件必须使用 UTF-8 编码，避免中文乱码
+  ```python
+  # ✅ 正确：显式指定UTF-8编码
+  handler = logging.FileHandler('app.log', encoding='utf-8')
+
+  # ❌ 错误：依赖系统默认编码
+  handler = logging.FileHandler('app.log')
+  ```
 
 ## 常见任务
 

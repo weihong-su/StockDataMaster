@@ -74,14 +74,20 @@ class StockDataMaster:
             if log_dir and not os.path.exists(log_dir):
                 os.makedirs(log_dir, exist_ok=True)
 
+        # 创建处理器列表
+        handlers = [logging.StreamHandler()]
+
+        # 添加文件处理器（指定UTF-8编码）
+        if log_file:
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            handlers.append(file_handler)
+
         # 配置根日志记录器
         logging.basicConfig(
             level=getattr(logging, log_level.upper()),
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler(log_file) if log_file else logging.NullHandler()
-            ]
+            handlers=handlers,
+            force=True  # 强制重新配置（如果已经配置过）
         )
 
     def _init_adapters(self):
