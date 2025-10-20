@@ -30,7 +30,7 @@ class CacheManager:
 
         # 缓存配置
         self.enabled = config.is_cache_enabled()
-        self.db_path = config.get('cache.db_path', 'StockDataMaster/cache/kline_cache.db')
+        self.db_path = config.get('cache.db_path', 'cache/kline_cache.db')
         self.max_days = config.get_cache_max_days()
 
         # 校验容忍度

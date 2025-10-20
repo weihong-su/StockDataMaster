@@ -68,10 +68,10 @@ pip install pandas mootdx baostock tushare
 ### 基本使用
 
 ```python
-from StockDataMaster import DataMaster
+from StockDataMaster import StockDataMaster
 
 # 初始化(单例模式)
-master = DataMaster()
+master = StockDataMaster()
 
 # 获取日K线数据
 df = master.get_kline('600519', freq='d', count=100)
@@ -300,10 +300,12 @@ from Methods import getStockData
 df = getStockData('600519', freq='d', start_date='2024-01-01')
 
 # 新代码(兼容调用)
-from StockDataMaster import DataMaster
-master = DataMaster()
+from StockDataMaster import StockDataMaster
+master = StockDataMaster()
 df = master.get_kline('600519', freq='d', start_date='2024-01-01')
 ```
+
+**注意**: `DataMaster` 已重命名为 `StockDataMaster`，但保留了 `DataMaster` 别名以保持向后兼容。
 
 详细移植指导请参考 [MIGRATION.md](MIGRATION.md)
 
@@ -324,7 +326,7 @@ df = master.get_kline('600519', freq='d', start_date='2024-01-01')
 
 **解决方案:**
 1. 检查网络连接
-2. 查看日志文件: `StockDataMaster/logs/data_master.log`
+2. 查看日志文件: `logs/data_master.log`
 3. 运行健康检查: `master.get_health_status()`
 
 ### 问题: 缓存不生效

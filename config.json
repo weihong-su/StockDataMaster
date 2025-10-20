@@ -42,7 +42,7 @@
   },
   "cache": {
     "enabled": true,
-    "db_path": "StockDataMaster/cache/kline_cache.db",
+    "db_path": "cache/kline_cache.db",
     "max_days_per_stock": 120,
     "update_time": "15:30",
     "validation": {
@@ -66,7 +66,7 @@
   },
   "logging": {
     "level": "INFO",
-    "file": "StockDataMaster/logs/data_master.log",
+    "file": "logs/data_master.log",
     "max_bytes": 10485760,
     "backup_count": 5
   }

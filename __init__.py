@@ -15,10 +15,10 @@ StockDataMaster - 股票数据主数据接口系统
 版本: 1.1.0
 """
 
-from .data_master import DataMaster
+from .data_master import StockDataMaster
 
-# 统一对外接口命名为StockDataMaster
-StockDataMaster = DataMaster
+# 向后兼容：保留 DataMaster 别名
+DataMaster = StockDataMaster
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __all__ = ["StockDataMaster", "DataMaster"]  # DataMaster保留向后兼容

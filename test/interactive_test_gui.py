@@ -25,12 +25,30 @@ import time
 import sqlite3
 
 # 添加项目路径
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+# test目录在StockDataMaster项目内部
+test_dir = os.path.dirname(os.path.abspath(__file__))  # test目录
+project_root = os.path.dirname(test_dir)  # StockDataMaster项目根目录
 
-lib_path = os.path.join(project_root, 'StockDataMaster', 'lib')
+# 需要将StockDataMaster的父目录添加到sys.path，以便作为包导入
+# 项目结构：C:\github-repo\StockDataMaster\
+# 我们需要添加 C:\github-repo\ 到 sys.path
+parent_dir = os.path.dirname(project_root)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# 同时也添加项目根目录以支持直接导入
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# 内置库路径：lib目录在项目根目录下
+lib_path = os.path.join(project_root, 'lib')
 if os.path.exists(lib_path) and lib_path not in sys.path:
     sys.path.insert(0, lib_path)
+
+# 设置配置文件路径环境变量（确保DataMaster能找到config.json）
+config_path = os.path.join(project_root, 'config.json')
+if os.path.exists(config_path):
+    os.environ['STOCKDATAMASTER_CONFIG'] = config_path
 
 # 日志文件路径
 LOG_FILE = os.path.join(project_root, 'logs', f'interactive_test_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
@@ -73,17 +91,18 @@ class InteractiveTestGUI:
         log_to_file("="*80)
 
     def init_datamaster(self):
-        """初始化DataMaster"""
+        """初始化StockDataMaster"""
         try:
-            from StockDataMaster.data_master import DataMaster
-            self.master = DataMaster()
-            log_to_file("✓ DataMaster初始化成功")
+            # 作为包导入（test目录在StockDataMaster项目内部）
+            from StockDataMaster import StockDataMaster
+            self.master = StockDataMaster()
+            log_to_file("✓ StockDataMaster初始化成功")
             log_to_file(f"可用数据源: {list(self.master.adapters.keys())}")
         except Exception as e:
-            log_to_file(f"✗ DataMaster初始化失败: {e}")
+            log_to_file(f"✗ StockDataMaster初始化失败: {e}")
             import traceback
             log_to_file(traceback.format_exc())
-            messagebox.showerror("初始化失败", f"DataMaster初始化失败:\n{e}")
+            messagebox.showerror("初始化失败", f"StockDataMaster初始化失败:\n{e}")
             sys.exit(1)
 
     def create_widgets(self):
@@ -525,7 +544,8 @@ class InteractiveTestGUI:
             return
 
         filename = f"kline_{self.stock_entry.get()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        filepath = os.path.join(project_root, 'test', filename)
+        # 导出到test目录下
+        filepath = os.path.join(test_dir, filename)
 
         try:
             self.current_kline_df.to_excel(filepath, index=False)
@@ -1301,6 +1321,7 @@ class InteractiveTestGUI:
         """保存日志"""
         content = self.log_text.get('1.0', tk.END)
         filename = f"interactive_test_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        # 保存到项目的logs目录
         filepath = os.path.join(project_root, 'logs', filename)
 
         try:

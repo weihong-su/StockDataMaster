@@ -16,7 +16,7 @@ from .cache import CacheManager
 from .health import HealthManager
 
 
-class DataMaster:
+class StockDataMaster:
     """股票数据主数据接口"""
 
     _instance = None  # 单例模式
@@ -29,7 +29,7 @@ class DataMaster:
 
     def __init__(self, config_path: Optional[str] = None):
         """
-        初始化DataMaster
+        初始化StockDataMaster
 
         Args:
             config_path: 配置文件路径
@@ -43,7 +43,7 @@ class DataMaster:
 
         # 设置日志
         self._setup_logging()
-        self.logger = logging.getLogger("DataMaster")
+        self.logger = logging.getLogger("StockDataMaster")
         self.logger.info("初始化StockDataMaster...")
 
         # 创建适配器
@@ -601,17 +601,17 @@ class DataMaster:
 _global_master = None
 
 
-def get_data_master(config_path: Optional[str] = None) -> DataMaster:
+def get_data_master(config_path: Optional[str] = None) -> 'StockDataMaster':
     """
-    获取全局DataMaster实例(单例)
+    获取全局StockDataMaster实例(单例)
 
     Args:
         config_path: 配置文件路径
 
     Returns:
-        DataMaster实例
+        StockDataMaster实例
     """
     global _global_master
     if _global_master is None:
-        _global_master = DataMaster(config_path)
+        _global_master = StockDataMaster(config_path)
     return _global_master
