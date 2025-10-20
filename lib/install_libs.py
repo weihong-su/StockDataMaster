@@ -26,6 +26,7 @@ def install_builtin_libs():
         ('mootdx', '0.11.7'),     # 通达信数据接口(从.conda环境复制的版本)
         ('baostock', '0.8.9'),    # Baostock数据接口(从.conda环境复制的版本)
         ('tushare', '1.4.24'),    # Tushare数据接口(用于日K线数据校核)
+        ('tdxpy', '0.2.7'),
         # xtquant需要手动安装或从QMT环境复制(依赖QMT客户端)
     ]
 
