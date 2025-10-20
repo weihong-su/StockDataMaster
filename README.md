@@ -29,7 +29,6 @@
 
 ### 📦 易于集成
 - 独立Python模块，便捷移植
-- 兼容现有getStockData调用
 - 完整的API文档和示例
 
 ## 📁 目录结构
@@ -130,7 +129,7 @@ master.close()
 
 ## 📖 API文档
 
-### DataMaster主类
+### StockDataMaster主类
 
 #### `get_kline(code, freq='d', start_date=None, end_date=None, count=None, adjust='qfq', use_cache=True)`
 
@@ -268,15 +267,10 @@ print(status['active_sources'])
 ### 运行功能测试
 
 ```bash
-cd test/StockDataMaster
-python test_functional.py
+cd test
+python interactive_test_gui.py
 ```
 
-### 运行性能测试
-
-```bash
-python test_performance.py
-```
 
 ## 📊 性能指标
 
@@ -290,31 +284,12 @@ python test_performance.py
 | 获取实时tick | 0.3-0.8秒 | 交易时间内 |
 | 健康检查 | 0.5-1.0秒 | 每分钟自动执行 |
 
-## 🔄 与现有系统集成
-
-### 替换Methods.py中的getStockData
-
-```python
-# 原代码
-from Methods import getStockData
-df = getStockData('600519', freq='d', start_date='2024-01-01')
-
-# 新代码(兼容调用)
-from StockDataMaster import StockDataMaster
-master = StockDataMaster()
-df = master.get_kline('600519', freq='d', start_date='2024-01-01')
-```
-
-**注意**: `DataMaster` 已重命名为 `StockDataMaster`，但保留了 `DataMaster` 别名以保持向后兼容。
-
-详细移植指导请参考 [MIGRATION.md](MIGRATION.md)
-
 ## ⚠️ 注意事项
 
 1. **Tushare Token**: 需要在config.json中配置有效的token
 2. **xtquant**: 需要本地运行QMT客户端，否则自动降级
 3. **缓存路径**: 确保cache.db_path目录有写权限
-4. **日志文件**: 默认输出到StockDataMaster/logs/目录
+4. **日志文件**: 默认输出到logs目录
 5. **数据源限制**:
    - Mootdx: 分钟线最多800条
    - Tushare: 分钟线最多8000条，需要权限
@@ -345,7 +320,7 @@ df = master.get_kline('600519', freq='d', start_date='2024-01-01')
 
 ## 📝 更新日志
 
-### v1.0.0 (2025-01-19)
+### v1.0.0 (2025-10-20)
 - ✨ 初始版本发布
 - 🔌 支持4个数据源(Mootdx, Baostock, Tushare, xtquant)
 - 💾 实现智能缓存系统
@@ -362,7 +337,7 @@ MIT License
 
 ## 👥 作者
 
-StockQuant Team
+YOLO Team
 
 ## 📮 联系方式
 
