@@ -1,0 +1,73 @@
+{
+  "use_builtin_libs": true,
+  "data_sources": {
+    "tushare": {
+      "enabled": true,
+      "priority": 1,
+      "timeout": 10,
+      "retry_times": 2,
+      "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f990",
+      "use_for": ["kline_day"],
+      "comment": "日K线主数据源,复权数据准确"
+    },
+    "mootdx": {
+      "enabled": true,
+      "priority": 2,
+      "timeout": 5,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute"],
+      "adjustflag": "qfq",
+      "comment": "日K线备用+分钟K线主数据源,复权数据有BUG但分钟线可用"
+    },
+    "baostock": {
+      "enabled": true,
+      "priority": 3,
+      "timeout": 8,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute", "valuation"],
+      "adjustflag": "2",
+      "comment": "日K线和分钟K线备用数据源"
+    },
+    "xtquant": {
+      "enabled": true,
+      "priority": 1,
+      "timeout": 5,
+      "retry_times": 2,
+      "use_for": ["tick"],
+      "fallback_to_5m": true,
+      "qmt_path": "",
+      "account": "",
+      "comment": "实时Tick主数据源(需QMT客户端运行)"
+    }
+  },
+  "cache": {
+    "enabled": true,
+    "db_path": "StockDataMaster/cache/kline_cache.db",
+    "max_days_per_stock": 120,
+    "update_time": "15:30",
+    "validation": {
+      "price_tolerance_abs": 0.01,
+      "price_tolerance_pct": 0.005,
+      "volume_tolerance_pct": 0.05
+    }
+  },
+  "health_check": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "response_time_threshold": 5.0,
+    "consecutive_failures_threshold": 3,
+    "data_freshness_days": 3
+  },
+  "hot_switch": {
+    "enabled": true,
+    "smooth_transition": true,
+    "buffer_size": 10,
+    "switch_notification": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "StockDataMaster/logs/data_master.log",
+    "max_bytes": 10485760,
+    "backup_count": 5
+  }
+}

@@ -1,0 +1,29 @@
+# 忽略内置库文件(库文件不提交到Git)
+# 用户需要自行下载或使用脚本安装
+
+# 数据接口库
+mootdx/
+baostock/
+tushare/
+xtquant/
+tushare/
+tdxpy/
+
+# 可选的大型依赖
+pandas/
+numpy/
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 分发文件
+*.dist-info/
+*.egg-info/
+
+# 但保留README和安装脚本
+!README.md
+!install_libs.py
+!.gitignore

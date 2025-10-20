@@ -1,0 +1,19 @@
+# StockDataMaster 依赖库
+
+# 核心依赖(必需)
+pandas>=1.3.5          # 数据处理
+numpy>=1.21.0          # 数值计算
+
+# 数据源库(可选,建议使用内置库)
+# 如果use_builtin_libs=false,则需要安装以下库:
+mootdx>=0.8.4          # 通达信数据接口
+baostock>=0.8.8        # Baostock数据接口
+tushare>=1.2.89        # Tushare数据接口
+
+# xtquant需要单独安装QMT客户端
+# xtquant>=1.0.0
+
+# 说明:
+# 1. 如果使用内置库(use_builtin_libs=true),则只需安装pandas和numpy
+# 2. 内置库通过lib/install_libs.py脚本安装到lib/目录
+# 3. 推荐生产环境使用内置库,确保版本一致性
