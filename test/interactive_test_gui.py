@@ -16,7 +16,7 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
 import pandas as pd
 import json
 from typing import Dict, Any, Optional
@@ -76,6 +76,11 @@ class InteractiveTestGUI:
         self.current_freq = "d"
         self.auto_refresh = False
         self.refresh_interval = 5  # 秒
+
+        # 走势图相关
+        self.intraday_chart_window = None  # 走势图窗口
+        self.intraday_chart_fig = None  # 走势图Figure对象
+        self.intraday_chart_axes = None  # 走势图Axes对象
 
         # 初始化DataMaster
         self.init_datamaster()
@@ -242,6 +247,11 @@ class InteractiveTestGUI:
                                       variable=self.auto_refresh_var,
                                       command=self.toggle_auto_refresh)
         auto_check.grid(row=0, column=3, padx=5)
+
+        # 走势图按钮
+        chart_btn = ttk.Button(control_frame, text="显示今日走势图",
+                               command=self.show_intraday_chart)
+        chart_btn.grid(row=0, column=4, padx=5)
 
         # 实时数据展示区
         display_frame = ttk.LabelFrame(frame, text="实时行情", padding=10)
@@ -478,8 +488,8 @@ class InteractiveTestGUI:
             else:
                 volume_str = f"{volume_in_lots/10000:.2f}万手"
 
-            # 成交额: Tushare返回的是千元,需要除以10转成万元
-            amount_in_wan = amount / 10  # 千元转万元
+            # 成交额: Tushare返回的是元(已从千元转换),需要除以10000转成万元
+            amount_in_wan = amount / 10000  # 元转万元
             if amount_in_wan < 10000:
                 amount_str = f"{amount_in_wan:.2f}万"
             else:
@@ -569,7 +579,8 @@ class InteractiveTestGUI:
 
             # 准备数据
             df = self.current_kline_df.copy()
-            df['date'] = pd.to_datetime(df['date'])
+            # 【修复: 使用format='mixed'和errors='coerce'处理多种日期格式】
+            df['date'] = pd.to_datetime(df['date'], format='mixed', errors='coerce')
             df.set_index('date', inplace=True)
 
             if not all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume']):
@@ -1032,7 +1043,607 @@ class InteractiveTestGUI:
             return
 
         self.fetch_tick_data()
+
+        # 如果走势图窗口打开,同时刷新走势图
+        if self.intraday_chart_window is not None:
+            try:
+                if self.intraday_chart_window.winfo_exists():
+                    self._refresh_intraday_chart()
+            except:
+                # 窗口已关闭
+                self.intraday_chart_window = None
+                self.intraday_chart_fig = None
+                self.intraday_chart_axes = None
+
         self.root.after(5000, self._auto_refresh_loop)
+
+    def show_intraday_chart(self):
+        """显示今日走势图"""
+        stock_code = self.realtime_stock_entry.get().strip()
+
+        if not stock_code:
+            messagebox.showwarning("警告", "请输入股票代码")
+            return
+
+        self.log_message(f"显示 {stock_code} 今日走势图", "info")
+        log_to_file(f">>> 显示今日走势图: code={stock_code}")
+
+        # 后台线程获取数据并绘图
+        threading.Thread(target=self._show_intraday_chart_thread,
+                        args=(stock_code,),
+                        daemon=True).start()
+
+    def _show_intraday_chart_thread(self, stock_code):
+        """后台线程显示走势图"""
+        start_time = time.time()
+
+        try:
+            # 获取今日数据
+            intraday_data = self._fetch_intraday_data(stock_code)
+            elapsed = time.time() - start_time
+
+            if intraday_data is None or intraday_data.empty:
+                self.root.after(0, lambda: self.log_message(f"未获取到今日数据 ({elapsed:.3f}s)", "warning"))
+                log_to_file(f"<<< 未获取到今日数据, 耗时: {elapsed:.3f}s")
+                return
+
+            # 在主线程绘制图表
+            self.root.after(0, lambda: self._draw_intraday_chart(intraday_data, stock_code, elapsed))
+            log_to_file(f"<<< 成功获取今日数据 {len(intraday_data)} 条, 耗时: {elapsed:.3f}s")
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            self.root.after(0, lambda: self.log_message(f"显示走势图失败: {e} ({elapsed:.3f}s)", "error"))
+            log_to_file(f"<<< 显示走势图失败: {e}, 耗时: {elapsed:.3f}s")
+            import traceback
+            log_to_file(traceback.format_exc())
+
+    def _fetch_intraday_data(self, stock_code):
+        """获取今日分时数据
+
+        逻辑说明:
+        1. 如果在交易时段(09:30-15:00)，显示今日数据
+        2. 如果在非交易时段，显示上一个交易日的全天数据
+        3. 使用5分钟K线数据，最新点用tick数据更新
+        """
+        try:
+            # 【新增: 判断是否在交易时段】
+            now = datetime.now()
+            current_time = now.time()
+
+            # 交易时段: 09:30-11:30, 13:00-15:00
+            is_morning = dt_time(9, 30) <= current_time <= dt_time(11, 30)
+            is_afternoon = dt_time(13, 0) <= current_time <= dt_time(15, 0)
+            is_trading_hours = is_morning or is_afternoon
+
+            # 确定目标日期
+            if is_trading_hours and now.weekday() < 5:  # 交易日的交易时段
+                target_date = now.date()
+                log_to_file(f"  当前在交易时段，获取今日数据: {target_date}")
+            else:  # 非交易时段或周末
+                # 获取上一个交易日
+                target_date = now.date() - timedelta(days=1)
+                while target_date.weekday() >= 5:  # 跳过周末
+                    target_date -= timedelta(days=1)
+                log_to_file(f"  当前非交易时段，获取上一交易日数据: {target_date}")
+
+            # 获取5分钟K线数据（更稳定）
+            log_to_file(f"  获取5分钟K线数据...")
+            df_5min = self.master.get_kline(stock_code, freq='5', count=60)  # 60条足够一天
+
+            if df_5min is None or df_5min.empty:
+                log_to_file(f"  K线数据为空")
+                return None
+
+            # 【修复: 筛选目标日期的数据】
+            target_date_str = target_date.strftime('%Y-%m-%d')
+
+            if df_5min['date'].dtype == 'object' or isinstance(df_5min['date'].iloc[0], str):
+                # date列是字符串类型,直接使用字符串匹配
+                df_target = df_5min[df_5min['date'].astype(str).str.startswith(target_date_str)].copy()
+            else:
+                # date列是datetime类型,转换后筛选
+                df_5min['datetime_parsed'] = pd.to_datetime(df_5min['date'], format='mixed', errors='coerce')
+                df_target = df_5min[df_5min['datetime_parsed'].dt.date == target_date].copy()
+
+            log_to_file(f"  目标日期({target_date_str})数据条数: {len(df_target)}")
+
+            # 如果目标日期数据不足,使用最近数据
+            if len(df_target) < 5:
+                log_to_file(f"  目标日期数据不足")
+                if df_target.empty:
+                    df_target = df_5min.tail(48).copy()
+                    log_to_file(f"  使用最近数据替代: {len(df_target)} 条")
+
+            # 【关键修复: 确保有datetime列且格式正确】
+            if 'datetime' not in df_target.columns:
+                # 处理没有时间部分的数据
+                df_target['datetime'] = pd.to_datetime(df_target['date'], format='mixed', errors='coerce')
+
+                # 检查datetime是否有时间部分
+                if len(df_target) > 0:
+                    first_time = df_target['datetime'].iloc[0]
+                    # 如果所有时间都是00:00:00，说明数据没有时间部分
+                    if first_time.time() == dt_time(0, 0, 0):
+                        log_to_file(f"  数据没有时间部分，添加模拟时间")
+                        # 为数据添加模拟的时间 (从09:30开始，按5分钟递增)
+                        start_time = datetime.combine(first_time.date(), dt_time(9, 30))
+                        time_delta = timedelta(minutes=5)
+                        df_target['datetime'] = [start_time + i * time_delta for i in range(len(df_target))]
+                        log_to_file(f"  模拟时间范围: {df_target['datetime'].min()} 到 {df_target['datetime'].max()}")
+
+            # 【重要: 重置index，避免datetime index与datetime列冲突】
+            df_target = df_target.reset_index(drop=True)
+
+            # 【追加最新tick数据 - 仅在交易时段】
+            if is_trading_hours and target_date == now.date():
+                try:
+                    log_to_file(f"  获取最新tick数据...")
+                    tick = self.master.get_tick(stock_code)
+
+                    if tick and isinstance(tick, dict):
+                        current_price = tick.get('current', tick.get('price', tick.get('last', None)))
+
+                        if current_price and current_price > 0:
+                            tick_time = now
+                            # 构造tick数据点
+                            tick_row = {
+                                'date': tick_time.strftime('%Y-%m-%d %H:%M:%S'),
+                                'datetime': tick_time,
+                                'open': tick.get('open', current_price),
+                                'high': tick.get('high', current_price),
+                                'low': tick.get('low', current_price),
+                                'close': current_price,
+                                'volume': tick.get('volume', 0),
+                                'amount': tick.get('amount', 0)
+                            }
+
+                            df_target = pd.concat([df_target, pd.DataFrame([tick_row])], ignore_index=True)
+                            log_to_file(f"  已追加tick数据: price={current_price}, time={tick_time.strftime('%H:%M:%S')}")
+                        else:
+                            log_to_file(f"  tick数据价格无效")
+                    else:
+                        log_to_file(f"  未获取到有效tick数据")
+
+                except Exception as e:
+                    log_to_file(f"  获取tick数据失败: {e}")
+            else:
+                log_to_file(f"  非交易时段，不追加tick数据")
+
+            return df_target
+
+        except Exception as e:
+            log_to_file(f"  获取今日数据失败: {e}")
+            import traceback
+            log_to_file(traceback.format_exc())
+            return None
+
+    def _draw_intraday_chart(self, df, stock_code, elapsed):
+        """绘制今日走势图"""
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib import font_manager
+            import matplotlib
+            from matplotlib.dates import DateFormatter, HourLocator, MinuteLocator
+
+            # ========== 中文字体配置 ==========
+            chinese_fonts = []
+            for font in font_manager.fontManager.ttflist:
+                font_name = font.name
+                if any(name in font_name for name in ['Microsoft YaHei', 'SimHei', 'SimSun',
+                                                        'KaiTi', 'FangSong', 'Microsoft',
+                                                        'YaHei', 'Hei', 'Song']):
+                    chinese_fonts.append(font_name)
+
+            if chinese_fonts:
+                matplotlib.rcParams['font.sans-serif'] = chinese_fonts[:3]
+            else:
+                matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'DejaVu Sans']
+
+            # 直接指定字体文件
+            font_paths = [
+                r"C:\Windows\Fonts\msyh.ttc",
+                r"C:\Windows\Fonts\simhei.ttf",
+                r"C:\Windows\Fonts\simsun.ttc",
+            ]
+
+            font_prop = None
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    try:
+                        from matplotlib.font_manager import FontProperties
+                        font_prop = FontProperties(fname=font_path)
+                        log_to_file(f"  加载字体文件成功: {font_path}")
+                        break
+                    except Exception as e:
+                        log_to_file(f"  加载字体文件失败: {font_path}, {e}")
+
+            matplotlib.rcParams['font.family'] = 'sans-serif'
+            matplotlib.rcParams['axes.unicode_minus'] = False
+
+            # ========== 准备数据 ==========
+            df = df.copy()
+            # 【关键修复: 使用format='mixed'和errors='coerce'处理多种日期格式】
+            df['datetime'] = pd.to_datetime(df['date'], format='mixed', errors='coerce')
+
+            # 计算涨跌幅
+            if len(df) > 0:
+                open_price = df.iloc[0]['open']  # 今日开盘价
+                df['pct_chg'] = ((df['close'] - open_price) / open_price) * 100
+            else:
+                df['pct_chg'] = 0
+
+            # 获取股票名称
+            stock_name = None
+            try:
+                stock_name = self.master.get_stock_name(stock_code)
+            except:
+                pass
+
+            # ========== 创建图表 ==========
+            # 如果窗口已存在,先关闭
+            if self.intraday_chart_window is not None:
+                try:
+                    if self.intraday_chart_window.winfo_exists():
+                        self.intraday_chart_window.destroy()
+                except:
+                    pass
+
+            # 创建新窗口
+            self.intraday_chart_window = tk.Toplevel(self.root)
+            title_text = f"{stock_code} {stock_name or ''} 今日走势图"
+            self.intraday_chart_window.title(title_text)
+            self.intraday_chart_window.geometry("1200x800")
+
+            # 创建matplotlib Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+            self.intraday_chart_fig, self.intraday_chart_axes = plt.subplots(2, 1,
+                                                                              figsize=(12, 8),
+                                                                              gridspec_kw={'height_ratios': [3, 1]})
+
+            # 绘制价格走势
+            ax_price = self.intraday_chart_axes[0]
+            ax_volume = self.intraday_chart_axes[1]
+
+            # 价格线
+            ax_price.plot(df['datetime'], df['close'], color='#1f77b4', linewidth=1.5, label='价格')
+
+            # 开盘价参考线
+            if len(df) > 0:
+                open_price = df.iloc[0]['open']
+                ax_price.axhline(y=open_price, color='gray', linestyle='--', linewidth=1, alpha=0.5, label='开盘价')
+
+                # 当前价格标注
+                current_price = df.iloc[-1]['close']
+                current_time = df.iloc[-1]['datetime']
+                current_pct = df.iloc[-1]['pct_chg']
+
+                # 涨跌颜色
+                price_color = 'red' if current_pct > 0 else 'green' if current_pct < 0 else 'gray'
+
+                ax_price.scatter([current_time], [current_price], color=price_color, s=50, zorder=5)
+                ax_price.text(current_time, current_price,
+                             f'  {current_price:.2f}\n  {current_pct:+.2f}%',
+                             verticalalignment='center',
+                             fontproperties=font_prop if font_prop else None,
+                             fontsize=9,
+                             color=price_color)
+
+            # 价格轴样式
+            if font_prop:
+                ax_price.set_title(title_text, fontproperties=font_prop, fontsize=14, pad=15)
+                ax_price.set_ylabel('价格(元)', fontproperties=font_prop, fontsize=11)
+            else:
+                ax_price.set_title(title_text, fontsize=14, pad=15)
+                ax_price.set_ylabel('价格(元)', fontsize=11)
+
+            ax_price.grid(True, alpha=0.3)
+
+            # 【修复1: 图例中文字体设置】
+            # 创建图例并设置中文字体,确保"价格"、"开盘价"正确显示
+            legend = ax_price.legend(prop=font_prop if font_prop else None, loc='upper left', fontsize=9)
+            # 额外设置图例文本字体
+            if font_prop:
+                for text in legend.get_texts():
+                    text.set_fontproperties(font_prop)
+
+            # 成交量柱状图
+            # 【关键修复: 计算合适的bar width】
+            if len(df) > 1:
+                # 根据时间间隔计算width (使用timedelta)
+                time_diff = (df['datetime'].iloc[1] - df['datetime'].iloc[0]).total_seconds() / 86400  # 转换为天数
+                bar_width = time_diff * 0.8  # 使用80%的间隔作为宽度
+            else:
+                bar_width = 5 / (24 * 60)  # 默认5分钟宽度
+
+            colors = ['red' if p > 0 else 'green' if p < 0 else 'gray' for p in df['pct_chg']]
+            bars = ax_volume.bar(df['datetime'], df['volume']/100, color=colors, alpha=0.6, width=bar_width)
+            log_to_file(f"  柱状图宽度: {bar_width:.6f} 天")
+
+            # 【关键修复：优化Y轴格式化，让大数值显示为万手而不是科学记数法】
+            def format_volume(x, p):
+                if x >= 1000000:
+                    return f'{x/10000:.0f}万'
+                elif x >= 1000:
+                    return f'{x/10000:.1f}万'
+                else:
+                    return f'{x:.0f}'
+
+            ax_volume.yaxis.set_major_formatter(plt.FuncFormatter(format_volume))
+
+            # 【新增：添加数值标注，让用户直观看到成交量大小】
+            volume_data = df['volume'] / 100  # 转换为手
+            for i, (bar, volume) in enumerate(zip(bars, volume_data)):
+                # 每8个柱子标注一次，避免过于密集
+                if i % 8 == 0 and volume > 0:
+                    height = bar.get_height()
+                    ax_volume.text(bar.get_x() + bar.get_width()/2., height,
+                                 f'{volume/10000:.0f}万',
+                                 ha='center', va='bottom', fontsize=8, alpha=0.8)
+
+            if font_prop:
+                ax_volume.set_ylabel('成交量(手)', fontproperties=font_prop, fontsize=11)
+                ax_volume.set_xlabel('时间', fontproperties=font_prop, fontsize=11)
+            else:
+                ax_volume.set_ylabel('成交量(手)', fontsize=11)
+                ax_volume.set_xlabel('时间', fontsize=11)
+
+            ax_volume.grid(True, alpha=0.3)
+
+            # 【修复2: 时间轴范围限制 - 优化版本】
+            if len(df) > 0:
+                # 获取数据的日期范围
+                min_time = df['datetime'].min()
+                max_time = df['datetime'].max()
+
+                # 统一使用09:30-15:00范围（适用于所有交易日数据）
+                data_date = min_time.date()
+                start_time = datetime.combine(data_date, dt_time(9, 30))
+                end_time = datetime.combine(data_date, dt_time(15, 0))
+
+                # 确保数据在范围内（添加边距处理）
+                if max_time > end_time:
+                    end_time = max_time + timedelta(minutes=5)
+                if min_time < start_time:
+                    start_time = min_time - timedelta(minutes=5)
+
+                ax_price.set_xlim(start_time, end_time)
+                ax_volume.set_xlim(start_time, end_time)
+                log_to_file(f"  时间轴范围: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+
+            # 时间轴格式 - 使用更合理的刻度定位器
+            from matplotlib.dates import DateFormatter, MinuteLocator, HourLocator
+            ax_volume.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+            # 使用30分钟间隔，避免刻度过多
+            ax_volume.xaxis.set_major_locator(MinuteLocator(byminute=[0, 30]))
+            ax_price.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+            ax_price.xaxis.set_major_locator(MinuteLocator(byminute=[0, 30]))
+
+            # 旋转时间标签
+            plt.setp(ax_volume.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # 设置时间标签字体(确保时间标签也使用中文字体以保持一致性)
+            if font_prop:
+                for label in ax_volume.get_xticklabels():
+                    label.set_fontproperties(font_prop)
+
+            # 调整布局
+            self.intraday_chart_fig.tight_layout()
+
+            # 嵌入到Tkinter窗口
+            canvas = FigureCanvasTkAgg(self.intraday_chart_fig, master=self.intraday_chart_window)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            # 添加工具栏
+            toolbar = NavigationToolbar2Tk(canvas, self.intraday_chart_window)
+            toolbar.update()
+
+            self.log_message(f"今日走势图已显示: {stock_code} ({elapsed:.3f}s)", "success")
+            log_to_file(f"  走势图绘制完成")
+
+        except ImportError as e:
+            messagebox.showerror("错误", f"缺少必要的库:\n{e}\n请安装: pip install matplotlib")
+            self.log_message(f"缺少必要的库: {e}", "error")
+            log_to_file(f"  导入库失败: {e}")
+        except Exception as e:
+            messagebox.showerror("错误", f"绘制走势图失败:\n{e}")
+            self.log_message(f"绘制走势图失败: {e}", "error")
+            import traceback
+            log_to_file(traceback.format_exc())
+
+    def _refresh_intraday_chart(self):
+        """刷新走势图数据"""
+        if self.intraday_chart_window is None or self.intraday_chart_fig is None:
+            return
+
+        stock_code = self.realtime_stock_entry.get().strip()
+        if not stock_code:
+            return
+
+        log_to_file(f">>> 刷新走势图: code={stock_code}")
+
+        try:
+            # 获取今日数据 (已经包含时间处理逻辑)
+            intraday_data = self._fetch_intraday_data(stock_code)
+
+            if intraday_data is None or intraday_data.empty:
+                log_to_file(f"<<< 刷新走势图: 未获取到数据")
+                return
+
+            # 更新图表数据
+            ax_price = self.intraday_chart_axes[0]
+            ax_volume = self.intraday_chart_axes[1]
+
+            # 清空现有图表
+            ax_price.clear()
+            ax_volume.clear()
+
+            # 准备数据 (直接使用已有的datetime列，不要重新转换)
+            df = intraday_data.copy()
+
+            # 【关键修复: 确保datetime列存在且正确】
+            if 'datetime' not in df.columns:
+                df['datetime'] = pd.to_datetime(df['date'], format='mixed', errors='coerce')
+
+                # 检查是否需要添加时间模拟 (与_fetch_intraday_data保持一致)
+                if len(df) > 0:
+                    first_time = df['datetime'].iloc[0]
+                    if first_time.time() == dt_time(0, 0, 0):
+                        log_to_file(f"  刷新时添加时间模拟")
+                        start_time = datetime.combine(first_time.date(), dt_time(9, 30))
+                        time_delta = timedelta(minutes=5)
+                        df['datetime'] = [start_time + i * time_delta for i in range(len(df))]
+
+            # 计算涨跌幅
+            if len(df) > 0:
+                open_price = df.iloc[0]['open']
+                df['pct_chg'] = ((df['close'] - open_price) / open_price) * 100
+            else:
+                df['pct_chg'] = 0
+
+            # 加载中文字体 (用于图例)
+            import matplotlib.font_manager as font_manager
+            from matplotlib.font_manager import FontProperties
+
+            font_paths = [
+                r"C:\Windows\Fonts\msyh.ttc",
+                r"C:\Windows\Fonts\simhei.ttf",
+                r"C:\Windows\Fonts\simsun.ttc",
+            ]
+
+            font_prop = None
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    try:
+                        font_prop = FontProperties(fname=font_path)
+                        break
+                    except:
+                        pass
+
+            # 重新绘制价格线
+            ax_price.plot(df['datetime'], df['close'], color='#1f77b4', linewidth=1.5, label='价格')
+
+            # 开盘价参考线
+            if len(df) > 0:
+                open_price = df.iloc[0]['open']
+                ax_price.axhline(y=open_price, color='gray', linestyle='--', linewidth=1, alpha=0.5, label='开盘价')
+
+                # 当前价格标注
+                current_price = df.iloc[-1]['close']
+                current_time = df.iloc[-1]['datetime']
+                current_pct = df.iloc[-1]['pct_chg']
+
+                price_color = 'red' if current_pct > 0 else 'green' if current_pct < 0 else 'gray'
+                ax_price.scatter([current_time], [current_price], color=price_color, s=50, zorder=5)
+
+            # 设置标题和标签
+            stock_name = None
+            try:
+                stock_name = self.master.get_stock_name(stock_code)
+            except:
+                pass
+
+            title_text = f"{stock_code} {stock_name or ''} 今日走势图"
+
+            if font_prop:
+                ax_price.set_title(title_text, fontproperties=font_prop, fontsize=14)
+                ax_price.set_ylabel('价格(元)', fontproperties=font_prop, fontsize=11)
+            else:
+                ax_price.set_title(title_text, fontsize=14)
+                ax_price.set_ylabel('价格(元)', fontsize=11)
+
+            ax_price.grid(True, alpha=0.3)
+
+            # 设置图例 (关键: 使用中文字体)
+            legend = ax_price.legend(prop=font_prop if font_prop else None, loc='upper left', fontsize=9)
+            if font_prop:
+                for text in legend.get_texts():
+                    text.set_fontproperties(font_prop)
+
+            # 重新绘制成交量
+            # 【关键修复: 计算合适的bar width】
+            if len(df) > 1:
+                time_diff = (df['datetime'].iloc[1] - df['datetime'].iloc[0]).total_seconds() / 86400
+                bar_width = time_diff * 0.8
+            else:
+                bar_width = 5 / (24 * 60)
+
+            colors = ['red' if p > 0 else 'green' if p < 0 else 'gray' for p in df['pct_chg']]
+            bars = ax_volume.bar(df['datetime'], df['volume']/100, color=colors, alpha=0.6, width=bar_width)
+            log_to_file(f"  刷新柱状图宽度: {bar_width:.6f} 天")
+
+            # 【关键修复：优化Y轴格式化，让大数值显示为万手而不是科学记数法】
+            def format_volume(x, p):
+                if x >= 1000000:
+                    return f'{x/10000:.0f}万'
+                elif x >= 1000:
+                    return f'{x/10000:.1f}万'
+                else:
+                    return f'{x:.0f}'
+
+            ax_volume.yaxis.set_major_formatter(plt.FuncFormatter(format_volume))
+
+            # 【新增：添加数值标注，让用户直观看到成交量大小】
+            volume_data = df['volume'] / 100  # 转换为手
+            for i, (bar, volume) in enumerate(zip(bars, volume_data)):
+                # 每8个柱子标注一次，避免过于密集
+                if i % 8 == 0 and volume > 0:
+                    height = bar.get_height()
+                    ax_volume.text(bar.get_x() + bar.get_width()/2., height,
+                                 f'{volume/10000:.0f}万',
+                                 ha='center', va='bottom', fontsize=8, alpha=0.8)
+
+            if font_prop:
+                ax_volume.set_ylabel('成交量(手)', fontproperties=font_prop, fontsize=11)
+                ax_volume.set_xlabel('时间', fontproperties=font_prop, fontsize=11)
+            else:
+                ax_volume.set_ylabel('成交量(手)', fontsize=11)
+                ax_volume.set_xlabel('时间', fontsize=11)
+
+            ax_volume.grid(True, alpha=0.3)
+
+            # 【关键修复: 设置时间轴范围 - 优化版本】
+            if len(df) > 0:
+                from matplotlib.dates import DateFormatter, MinuteLocator
+
+                min_time = df['datetime'].min()
+                max_time = df['datetime'].max()
+
+                # 统一使用09:30-15:00范围
+                data_date = min_time.date()
+                start_time = datetime.combine(data_date, dt_time(9, 30))
+                end_time = datetime.combine(data_date, dt_time(15, 0))
+
+                # 确保数据在范围内
+                if max_time > end_time:
+                    end_time = max_time + timedelta(minutes=5)
+                if min_time < start_time:
+                    start_time = min_time - timedelta(minutes=5)
+
+                ax_price.set_xlim(start_time, end_time)
+                ax_volume.set_xlim(start_time, end_time)
+                log_to_file(f"  刷新时间轴范围: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}")
+
+                # 时间轴格式 - 使用30分钟间隔
+                ax_volume.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+                ax_volume.xaxis.set_major_locator(MinuteLocator(byminute=[0, 30]))
+                ax_price.xaxis.set_major_formatter(DateFormatter('%H:%M'))
+                ax_price.xaxis.set_major_locator(MinuteLocator(byminute=[0, 30]))
+
+                # 旋转时间标签
+                import matplotlib.pyplot as plt
+                plt.setp(ax_volume.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # 刷新canvas
+            self.intraday_chart_fig.canvas.draw()
+            log_to_file(f"<<< 走势图已刷新: {len(df)} 条数据")
+
+        except Exception as e:
+            log_to_file(f"<<< 刷新走势图失败: {e}")
+            import traceback
+            log_to_file(traceback.format_exc())
 
     # ===== 数据源状态功能 =====
 

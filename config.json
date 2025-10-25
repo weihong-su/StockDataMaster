@@ -6,7 +6,7 @@
       "priority": 1,
       "timeout": 10,
       "retry_times": 2,
-      "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f990",
+      "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
       "use_for": ["kline_day"],
       "comment": "日K线主数据源,复权数据准确"
     },
