@@ -19,3 +19,7 @@ cache/__pycache__/__init__.cpython-38.pyc
 cache/__pycache__/cache_manager.cpython-38.pyc
 health/__pycache__/__init__.cpython-38.pyc
 health/__pycache__/health_manager.cpython-38.pyc
+
+/logs/*
+/docs/*
+/test/*

@@ -9,7 +9,7 @@ import pandas as pd
 import logging
 import os
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import threading
 
 
@@ -129,10 +129,13 @@ class CacheManager:
                     query += " AND date <= ?"
                     params.append(end_date)
 
-                query += " ORDER BY date"
-
+                # 🔥 关键修复: 使用count时,需要从最新数据开始取
+                # 先降序排列取最新N条,然后在Python中反转为升序
                 if count:
+                    query += " ORDER BY date DESC"
                     query += f" LIMIT {count}"
+                else:
+                    query += " ORDER BY date"
 
                 # 执行查询
                 df = pd.read_sql_query(query, conn, params=params)
@@ -140,6 +143,10 @@ class CacheManager:
 
                 if df.empty:
                     return None
+
+                # 🔥 如果使用了count参数,需要反转数据顺序(从降序变回升序)
+                if count and len(df) > 0:
+                    df = df.iloc[::-1].reset_index(drop=True)
 
                 # 设置数据来源为缓存
                 df.attrs['source'] = 'cache'
@@ -179,9 +186,26 @@ class CacheManager:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
 
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                now = datetime.now()
+                now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+                today_str = now.strftime('%Y-%m-%d')
+
+                # 市场收盘时间 15:00
+                market_close_time = time(15, 0)
+                can_cache_today = now.time() >= market_close_time
+
+                # 统计跳过的当日数据
+                skipped_today_count = 0
 
                 for _, row in df.iterrows():
+                    row_date = str(row['date'])
+
+                    # 🔥 智能缓存：盘中时段跳过当日数据
+                    if row_date == today_str and not can_cache_today:
+                        skipped_today_count += 1
+                        self.logger.debug(f"盘中时段，跳过当日数据: {row_date} (当前时间: {now.strftime('%H:%M:%S')})")
+                        continue
+
                     # 使用REPLACE实现更新或插入
                     cursor.execute('''
                         REPLACE INTO kline_cache (
@@ -190,7 +214,7 @@ class CacheManager:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         code,
-                        row['date'],
+                        row_date,
                         float(row['open']),
                         float(row['high']),
                         float(row['low']),
@@ -200,14 +224,18 @@ class CacheManager:
                         source1,
                         source2,
                         1 if validated else 0,
-                        now,
-                        now
+                        now_str,
+                        now_str
                     ))
 
                 conn.commit()
                 conn.close()
 
-                self.logger.debug(f"数据已保存到缓存 {code}: {len(df)}条")
+                cached_count = len(df) - skipped_today_count
+                if skipped_today_count > 0:
+                    self.logger.info(f"数据已保存到缓存 {code}: {cached_count}条 (跳过盘中当日数据: {skipped_today_count}条)")
+                else:
+                    self.logger.debug(f"数据已保存到缓存 {code}: {cached_count}条")
                 return True
 
         except Exception as e:

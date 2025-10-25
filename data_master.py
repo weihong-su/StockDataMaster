@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Optional, Dict, Any
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, time
 
 from .config import get_config
 from .adapters import AdapterFactory
@@ -145,15 +145,17 @@ class StockDataMaster:
             cached_df = self.cache_manager.get_cached_kline(code, start_date, end_date, count)
 
             if cached_df is not None and not cached_df.empty:
-                # 检查缓存是否足够新
-                is_fresh = self._is_cache_fresh(cached_df)
+                # 检查缓存是否足够新（传入用户请求的 end_date 参数）
+                is_fresh = self._is_cache_fresh(cached_df, end_date)
                 # 检查数据量是否充足 - 放宽条件,>=95%即可
                 # 原因: 双源校验可能导致少数数据校验失败,如119/120
                 is_sufficient = count is None or len(cached_df) >= count * 0.95
+                # 检查请求的日期范围是否超出缓存范围
+                is_date_range_covered = self._is_date_range_covered(cached_df, start_date, end_date)
 
-                self.logger.debug(f"缓存检查: code={code}, is_fresh={is_fresh}, is_sufficient={is_sufficient}, cached_rows={len(cached_df)}, request_count={count}")
+                self.logger.debug(f"缓存检查: code={code}, is_fresh={is_fresh}, is_sufficient={is_sufficient}, is_date_range_covered={is_date_range_covered}, cached_rows={len(cached_df)}, request_count={count}")
 
-                if is_fresh and is_sufficient:
+                if is_fresh and is_sufficient and is_date_range_covered:
                     # 确保source字段存在(防止attrs丢失)
                     if 'source' not in cached_df.attrs:
                         cached_df.attrs['source'] = 'cache'
@@ -161,6 +163,8 @@ class StockDataMaster:
                     return cached_df
                 elif is_fresh and not is_sufficient:
                     self.logger.debug(f"{code}缓存数据不足({len(cached_df)}/{count}条),从数据源补充")
+                elif not is_date_range_covered:
+                    self.logger.debug(f"{code}缓存日期范围不覆盖请求范围,重新获取")
                 else:
                     self.logger.debug(f"{code}缓存数据不新鲜(latest={cached_df['date'].iloc[-1]}),重新获取")
 
@@ -348,32 +352,141 @@ class StockDataMaster:
         except Exception as e:
             self.logger.error(f"缓存数据失败 {code}: {e}")
 
-    def _is_cache_fresh(self, df: pd.DataFrame) -> bool:
+    def _is_date_range_covered(self, cached_df: pd.DataFrame, start_date: Optional[str], end_date: Optional[str]) -> bool:
         """
-        检查缓存数据是否新鲜
+        检查请求的日期范围是否被缓存数据覆盖
+
+        Args:
+            cached_df: 缓存数据
+            start_date: 请求的开始日期
+            end_date: 请求的结束日期
+
+        Returns:
+            是否覆盖
+        """
+        if cached_df is None or cached_df.empty:
+            return False
+
+        try:
+            # 如果没有指定日期范围，认为覆盖
+            if not start_date and not end_date:
+                return True
+
+            cached_start = pd.to_datetime(cached_df['date'].iloc[0])
+            cached_end = pd.to_datetime(cached_df['date'].iloc[-1])
+
+            # 如果指定了开始日期，检查缓存开始日期是否早于请求开始日期
+            if start_date:
+                request_start = pd.to_datetime(start_date)
+                if cached_start > request_start:
+                    self.logger.debug(f"缓存开始日期{cached_start.date()}晚于请求开始日期{request_start.date()}")
+                    return False
+
+            # 如果指定了结束日期，检查缓存结束日期是否晚于请求结束日期
+            if end_date:
+                request_end = pd.to_datetime(end_date)
+                if cached_end < request_end:
+                    self.logger.debug(f"缓存结束日期{cached_end.date()}早于请求结束日期{request_end.date()}")
+                    return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"检查日期范围覆盖失败: {e}")
+            return False
+
+    def _is_cache_fresh(self, df: pd.DataFrame, request_end_date: Optional[str] = None) -> bool:
+        """
+        智能缓存新鲜度判断（含盘中/盘后逻辑 + 历史数据优化）
+
+        核心逻辑：
+        1. 🔥 如果用户明确请求历史时间段（end_date < 今天）→ 新鲜（历史数据不变）
+        2. 🔥 如果缓存最新日期 < 今天 → 新鲜（历史数据不变，解决GUI count场景）
+        3. 如果缓存最新日期是今天且盘中时段 → 不新鲜（当日数据动态变化）
+        4. 如果缓存最新日期是今天且盘后时段 → 新鲜（当日数据已固定）
 
         Args:
             df: 缓存数据
+            request_end_date: 用户请求的结束日期（YYYY-MM-DD），如果未指定则表示请求最新数据
 
         Returns:
-            是否新鲜
+            bool: 缓存是否新鲜
         """
         if df is None or df.empty:
             return False
 
         try:
-            latest_date = pd.to_datetime(df['date'].iloc[-1])
-            days_diff = (datetime.now() - latest_date).days
+            now = datetime.now()
+            today = now.date()
 
-            # 判断规则:
-            # 宽松策略: 如果用户勾选了"使用缓存",就信任缓存数据
-            # 只要缓存数据存在且在合理范围内(365天),就认为是新鲜的
-            # 这样即使是测试环境、非交易日、长假期,缓存都能正常使用
-            # 如果用户需要最新数据,可以不勾选"使用缓存"
-            return days_diff <= 365
+            # 🔥 优化1: 如果用户指定了 end_date 且不是今天，说明请求的是历史数据
+            # 历史数据永远不会变化，直接判定为新鲜
+            if request_end_date:
+                request_end = pd.to_datetime(request_end_date).date()
+                if request_end < today:
+                    self.logger.debug(f"缓存数据新鲜：用户请求历史时间段(end_date={request_end} < 今天={today})，历史数据不变")
+                    return True
 
-        except:
+            # 获取缓存中最新的日期
+            latest_cache_date = pd.to_datetime(df['date']).max().date()
+
+            # 市场收盘时间 15:00
+            market_close_time = time(15, 0)
+            is_after_market_close = now.time() >= market_close_time
+
+            self.logger.debug(f"缓存新鲜度检查: 缓存最新日期{latest_cache_date}, 今天{today}, 当前时间{now.strftime('%H:%M:%S')}, 当前{now.strftime('%A')}")
+
+            # 🔥 优化2: 如果缓存最新日期 < 今天，说明缓存的都是历史数据
+            # 历史数据不会变化，直接判定为新鲜（关键修复：解决GUI count参数场景）
+            if latest_cache_date < today:
+                self.logger.debug(f"缓存数据新鲜：缓存最新日期{latest_cache_date} < 今天{today}，历史数据不变")
+                return True
+
+            # 如果缓存最新日期就是今天
+            if latest_cache_date == today:
+                # 盘中时段 → 不新鲜（当日数据动态变化）
+                if not is_after_market_close:
+                    self.logger.debug(f"缓存数据不新鲜：今天盘中时段(时间={now.strftime('%H:%M:%S')} < 15:00)，当日数据动态变化")
+                    return False
+                # 盘后时段 → 新鲜（当日数据已固定）
+                else:
+                    self.logger.debug(f"缓存数据新鲜：今天盘后时段(时间={now.strftime('%H:%M:%S')} >= 15:00)，当日数据已固定")
+                    return True
+
+            # 如果缓存最新日期 > 今天（理论上不应该出现，但防御性编程）
+            if latest_cache_date > today:
+                self.logger.warning(f"异常：缓存最新日期{latest_cache_date} > 今天{today}，判定为不新鲜")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"检查缓存新鲜度失败: {e}")
             return False
+
+    def _get_latest_trading_day(self) -> datetime.date:
+        """
+        获取最新交易日
+
+        Returns:
+            datetime.date: 最新交易日的日期
+        """
+        current_date = datetime.now().date()
+        weekday = datetime.now().weekday()
+
+        # 周一到周五（工作日）
+        if weekday <= 4:  # 0=周一, 1=周二, ..., 4=周五
+            # 对于工作日，今天就是最新交易日
+            # 注意：这里假设当天都是交易日，实际情况可能需要考虑节假日
+            return current_date
+
+        # 周六（5）
+        elif weekday == 5:
+            # 最新交易日是上周五
+            return current_date - timedelta(days=1)
+
+        # 周日（6）
+        elif weekday == 6:
+            # 最新交易日是上周五
+            return current_date - timedelta(days=2)
 
     def get_valuation(
         self,

@@ -1372,15 +1372,22 @@ class InteractiveTestGUI:
 
             ax_volume.yaxis.set_major_formatter(plt.FuncFormatter(format_volume))
 
+            # 🔥 关键修复：设置Y轴刻度标签字体，避免中文乱码
+            if font_prop:
+                for label in ax_volume.get_yticklabels():
+                    label.set_fontproperties(font_prop)
+
             # 【新增：添加数值标注，让用户直观看到成交量大小】
             volume_data = df['volume'] / 100  # 转换为手
             for i, (bar, volume) in enumerate(zip(bars, volume_data)):
                 # 每8个柱子标注一次，避免过于密集
                 if i % 8 == 0 and volume > 0:
                     height = bar.get_height()
+                    # 🔥 关键修复：使用fontproperties设置字体，避免中文乱码
                     ax_volume.text(bar.get_x() + bar.get_width()/2., height,
                                  f'{volume/10000:.0f}万',
-                                 ha='center', va='bottom', fontsize=8, alpha=0.8)
+                                 ha='center', va='bottom', fontsize=8, alpha=0.8,
+                                 fontproperties=font_prop if font_prop else None)
 
             if font_prop:
                 ax_volume.set_ylabel('成交量(手)', fontproperties=font_prop, fontsize=11)
@@ -1585,15 +1592,22 @@ class InteractiveTestGUI:
 
             ax_volume.yaxis.set_major_formatter(plt.FuncFormatter(format_volume))
 
+            # 🔥 关键修复：设置Y轴刻度标签字体，避免中文乱码
+            if font_prop:
+                for label in ax_volume.get_yticklabels():
+                    label.set_fontproperties(font_prop)
+
             # 【新增：添加数值标注，让用户直观看到成交量大小】
             volume_data = df['volume'] / 100  # 转换为手
             for i, (bar, volume) in enumerate(zip(bars, volume_data)):
                 # 每8个柱子标注一次，避免过于密集
                 if i % 8 == 0 and volume > 0:
                     height = bar.get_height()
+                    # 🔥 关键修复：使用fontproperties设置字体，避免中文乱码
                     ax_volume.text(bar.get_x() + bar.get_width()/2., height,
                                  f'{volume/10000:.0f}万',
-                                 ha='center', va='bottom', fontsize=8, alpha=0.8)
+                                 ha='center', va='bottom', fontsize=8, alpha=0.8,
+                                 fontproperties=font_prop if font_prop else None)
 
             if font_prop:
                 ax_volume.set_ylabel('成交量(手)', fontproperties=font_prop, fontsize=11)
