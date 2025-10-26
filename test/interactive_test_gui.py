@@ -1157,12 +1157,19 @@ class InteractiveTestGUI:
 
             # 【关键修复: 确保有datetime列且格式正确】
             if 'datetime' not in df_target.columns:
-                # 处理没有时间部分的数据
-                df_target['datetime'] = pd.to_datetime(df_target['date'], format='mixed', errors='coerce')
+                # 🔥 修复: 优先从index获取datetime(Mootdx数据index包含时间)
+                if isinstance(df_target.index, pd.DatetimeIndex):
+                    log_to_file(f"  从index获取datetime(index有时间信息)")
+                    df_target['datetime'] = df_target.index
+                else:
+                    # 备选: 从date列转换
+                    df_target['datetime'] = pd.to_datetime(df_target['date'], format='mixed', errors='coerce')
 
                 # 检查datetime是否有时间部分
                 if len(df_target) > 0:
                     first_time = df_target['datetime'].iloc[0]
+                    log_to_file(f"  第一条datetime: {first_time}")
+
                     # 如果所有时间都是00:00:00，说明数据没有时间部分
                     if first_time.time() == dt_time(0, 0, 0):
                         log_to_file(f"  数据没有时间部分，添加模拟时间")
@@ -1171,6 +1178,8 @@ class InteractiveTestGUI:
                         time_delta = timedelta(minutes=5)
                         df_target['datetime'] = [start_time + i * time_delta for i in range(len(df_target))]
                         log_to_file(f"  模拟时间范围: {df_target['datetime'].min()} 到 {df_target['datetime'].max()}")
+                    else:
+                        log_to_file(f"  datetime有时间部分: {first_time.strftime('%H:%M:%S')}")
 
             # 【重要: 重置index，避免datetime index与datetime列冲突】
             df_target = df_target.reset_index(drop=True)
@@ -1263,8 +1272,10 @@ class InteractiveTestGUI:
 
             # ========== 准备数据 ==========
             df = df.copy()
-            # 【关键修复: 使用format='mixed'和errors='coerce'处理多种日期格式】
-            df['datetime'] = pd.to_datetime(df['date'], format='mixed', errors='coerce')
+            # 【关键修复: 如果datetime列已存在且有效,直接使用;否则从date列转换】
+            if 'datetime' not in df.columns or df['datetime'].isna().all():
+                df['datetime'] = pd.to_datetime(df['date'], format='mixed', errors='coerce')
+                log_to_file(f"  从date列转换datetime")
 
             # 计算涨跌幅
             if len(df) > 0:
@@ -1294,6 +1305,26 @@ class InteractiveTestGUI:
             title_text = f"{stock_code} {stock_name or ''} 今日走势图"
             self.intraday_chart_window.title(title_text)
             self.intraday_chart_window.geometry("1200x800")
+
+            # 🔥 关键修复: 添加窗口关闭事件处理,确保窗口关闭时清空引用
+            def on_intraday_window_close():
+                """走势图窗口关闭时的清理"""
+                log_to_file(f"  走势图窗口关闭,清理引用和matplotlib Figure")
+                # 🔥 关键: 关闭matplotlib Figure,防止plt.show()显示已关闭的图表
+                if self.intraday_chart_fig is not None:
+                    import matplotlib.pyplot as plt
+                    plt.close(self.intraday_chart_fig)
+                    log_to_file(f"    已关闭matplotlib Figure")
+                # 销毁Tkinter窗口
+                if self.intraday_chart_window is not None:
+                    self.intraday_chart_window.destroy()
+                    log_to_file(f"    已销毁Tkinter窗口")
+                # 清空所有引用
+                self.intraday_chart_window = None
+                self.intraday_chart_fig = None
+                self.intraday_chart_axes = None
+
+            self.intraday_chart_window.protocol("WM_DELETE_WINDOW", on_intraday_window_close)
 
             # 创建matplotlib Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
