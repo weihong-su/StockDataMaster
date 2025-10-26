@@ -45,6 +45,9 @@
     "db_path": "cache/kline_cache.db",
     "max_days_per_stock": 120,
     "update_time": "15:30",
+    "stock_name_expire_days": 30,
+    "stock_name_cleanup_day": 5,
+    "stock_name_skip_expiration_check": true,
     "validation": {
       "price_tolerance_abs": 0.01,
       "price_tolerance_pct": 0.005,

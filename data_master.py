@@ -551,7 +551,7 @@ class StockDataMaster:
 
     def get_stock_name(self, code: str, use_cache: bool = True) -> Optional[str]:
         """
-        获取股票名称 (优化版: 支持名称缓存和会话复用)
+        获取股票名称 (优化版: 三层缓存 - 内存 → SQLite → baostock)
 
         Args:
             code: 股票代码 (支持 '600000' 或 'sh.600000')
@@ -564,10 +564,19 @@ class StockDataMaster:
             # 标准化代码格式
             clean_code = code.replace('sh.', '').replace('sz.', '')
 
-            # 🔥 优化1: 检查缓存
+            # 🔥 优化1: 检查内存缓存 (L1 Cache - 最快)
             if use_cache and clean_code in self._stock_name_cache:
-                self.logger.debug(f"股票名称缓存命中: {clean_code} -> {self._stock_name_cache[clean_code]}")
+                self.logger.debug(f"股票名称内存缓存命中: {clean_code} -> {self._stock_name_cache[clean_code]}")
                 return self._stock_name_cache[clean_code]
+
+            # 🔥 优化2: 检查SQLite缓存 (L2 Cache - 持久化)
+            if use_cache:
+                cached_name = self.cache_manager.get_cached_stock_name(clean_code)
+                if cached_name:
+                    # 回填到内存缓存
+                    self._stock_name_cache[clean_code] = cached_name
+                    self.logger.debug(f"股票名称SQLite缓存命中: {clean_code} -> {cached_name}")
+                    return cached_name
 
             # 标准化为baostock格式 (sh.600000 或 sz.000001)
             if not code.startswith(('sh.', 'sz.')):
@@ -578,12 +587,12 @@ class StockDataMaster:
             else:
                 bs_code = code
 
-            # 使用baostock查询股票基本信息
+            # 🔥 优化3: 从baostock查询 (L3 - 最慢,但权威)
             if 'baostock' in self.adapters:
                 try:
                     import baostock as bs
 
-                    # 🔥 优化2: 会话复用 - 确保baostock已登录
+                    # 会话复用 - 确保baostock已登录
                     if not self._bs_session_active:
                         lg = bs.login()
                         if lg.error_code != '0':
@@ -605,10 +614,13 @@ class StockDataMaster:
                         if data_list and len(data_list[0]) > 1:
                             stock_name = data_list[0][1]  # 第二列是code_name
 
-                            # 🔥 优化3: 缓存结果
+                            # 🔥 优化4: 双层缓存写入
                             if use_cache:
+                                # 内存缓存
                                 self._stock_name_cache[clean_code] = stock_name
-                                self.logger.debug(f"股票名称已缓存: {clean_code} -> {stock_name}")
+                                # SQLite持久化缓存
+                                self.cache_manager.cache_stock_name(clean_code, stock_name, 'baostock')
+                                self.logger.debug(f"股票名称已缓存(内存+SQLite): {clean_code} -> {stock_name}")
 
                             self.logger.debug(f"获取股票名称成功: {clean_code} -> {stock_name}")
                             return stock_name
