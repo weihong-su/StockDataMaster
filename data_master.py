@@ -56,6 +56,13 @@ class StockDataMaster:
         # 创建健康管理器
         self.health_manager = HealthManager(self.config, self.adapters)
 
+        # 🔥 优化: 股票名称缓存 (减少重复查询)
+        self._stock_name_cache = {}  # {code: name}
+
+        # 🔥 优化: baostock会话状态
+        self._bs_session_active = False
+        self._bs_last_login_time = None
+
         # 启动健康监控
         if self.config.is_health_check_enabled():
             self.health_manager.start_monitoring()
@@ -542,23 +549,32 @@ class StockDataMaster:
         self.logger.error(f"所有数据源均无法获取{code}的估值数据")
         return None
 
-    def get_stock_name(self, code: str) -> Optional[str]:
+    def get_stock_name(self, code: str, use_cache: bool = True) -> Optional[str]:
         """
-        获取股票名称
+        获取股票名称 (优化版: 支持名称缓存和会话复用)
 
         Args:
             code: 股票代码 (支持 '600000' 或 'sh.600000')
+            use_cache: 是否使用缓存 (默认True)
 
         Returns:
             股票名称,失败返回None
         """
         try:
-            # 标准化代码格式为baostock格式 (sh.600000 或 sz.000001)
+            # 标准化代码格式
+            clean_code = code.replace('sh.', '').replace('sz.', '')
+
+            # 🔥 优化1: 检查缓存
+            if use_cache and clean_code in self._stock_name_cache:
+                self.logger.debug(f"股票名称缓存命中: {clean_code} -> {self._stock_name_cache[clean_code]}")
+                return self._stock_name_cache[clean_code]
+
+            # 标准化为baostock格式 (sh.600000 或 sz.000001)
             if not code.startswith(('sh.', 'sz.')):
                 if code.startswith(('6', '688', '689')):
-                    bs_code = f'sh.{code}'
+                    bs_code = f'sh.{clean_code}'
                 else:
-                    bs_code = f'sz.{code}'
+                    bs_code = f'sz.{clean_code}'
             else:
                 bs_code = code
 
@@ -567,11 +583,15 @@ class StockDataMaster:
                 try:
                     import baostock as bs
 
-                    # 确保baostock已登录
-                    lg = bs.login()
-                    if lg.error_code != '0':
-                        self.logger.warning(f"baostock登录失败: {lg.error_msg}")
-                        return None
+                    # 🔥 优化2: 会话复用 - 确保baostock已登录
+                    if not self._bs_session_active:
+                        lg = bs.login()
+                        if lg.error_code != '0':
+                            self.logger.warning(f"baostock登录失败: {lg.error_msg}")
+                            return None
+                        self._bs_session_active = True
+                        self._bs_last_login_time = datetime.now()
+                        self.logger.debug("baostock会话已建立")
 
                     # 查询股票基本信息
                     rs = bs.query_stock_basic(code=bs_code)
@@ -584,16 +604,23 @@ class StockDataMaster:
                         # 返回第一条记录的股票名称
                         if data_list and len(data_list[0]) > 1:
                             stock_name = data_list[0][1]  # 第二列是code_name
-                            self.logger.debug(f"获取股票名称成功: {code} -> {stock_name}")
+
+                            # 🔥 优化3: 缓存结果
+                            if use_cache:
+                                self._stock_name_cache[clean_code] = stock_name
+                                self.logger.debug(f"股票名称已缓存: {clean_code} -> {stock_name}")
+
+                            self.logger.debug(f"获取股票名称成功: {clean_code} -> {stock_name}")
                             return stock_name
                     else:
                         self.logger.warning(f"查询股票基本信息失败: {rs.error_msg}")
-
-                    # 登出baostock
-                    bs.logout()
+                        # 会话可能失效,标记需要重新登录
+                        self._bs_session_active = False
 
                 except Exception as e:
                     self.logger.error(f"baostock查询股票名称异常: {e}")
+                    # 异常时标记会话失效
+                    self._bs_session_active = False
 
             return None
 
@@ -699,6 +726,16 @@ class StockDataMaster:
     def close(self):
         """关闭DataMaster,清理资源"""
         self.logger.info("关闭StockDataMaster...")
+
+        # 🔥 优化: 关闭baostock会话
+        if self._bs_session_active:
+            try:
+                import baostock as bs
+                bs.logout()
+                self._bs_session_active = False
+                self.logger.debug("baostock会话已关闭")
+            except Exception as e:
+                self.logger.warning(f"关闭baostock会话失败: {e}")
 
         # 停止健康监控
         self.health_manager.stop_monitoring()
