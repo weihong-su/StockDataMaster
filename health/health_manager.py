@@ -319,7 +319,7 @@ class HealthManager:
 
             for name, adapter in self.adapters.items():
                 status = self.health_status.get(name, {})
-                report['sources'][name] = {
+                source_report = {
                     'enabled': adapter.config.get('enabled', False),
                     'connected': adapter.is_connected,
                     'status': status.get('status', 'unknown'),
@@ -328,6 +328,25 @@ class HealthManager:
                     'failure_count': self.failure_counts.get(name, 0),
                     'error': status.get('error_message')
                 }
+
+                # 增强: 获取xtquant连接统计
+                if name == 'xtquant' and hasattr(adapter, 'get_connection_stats'):
+                    try:
+                        conn_stats = adapter.get_connection_stats()
+                        source_report['connection_stats'] = {
+                            'connect_count': conn_stats.get('connect_count', 0),
+                            'disconnect_count': conn_stats.get('disconnect_count', 0),
+                            'reconnect_count': conn_stats.get('reconnect_count', 0),
+                            'heartbeat_failures': conn_stats.get('heartbeat_failures', 0),
+                            'last_heartbeat': conn_stats.get('last_heartbeat').strftime('%H:%M:%S') if conn_stats.get('last_heartbeat') else 'N/A',
+                            'heartbeat_age_seconds': conn_stats.get('heartbeat_age_seconds'),
+                            'connection_health': conn_stats.get('connection_health', 'unknown'),
+                            'retry_stats': conn_stats.get('retry_stats', {})
+                        }
+                    except Exception as e:
+                        self.logger.debug(f"获取xtquant连接统计失败: {e}")
+
+                report['sources'][name] = source_report
 
             return report
 

@@ -3,15 +3,24 @@ xtquant数据源适配器
 
 使用xtquant(迅投QMT)获取实时行情数据
 参考: https://github.com/weihong-su/miniQMT 和 https://github.com/weihong-su/khQuant
+
+增强功能(2025-11-19):
+- 智能重试机制: 带指数退避的重试策略
+- 连接保活: 心跳检测和自动重连
+- 连接统计: 重试、重连次数等监控指标
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import pandas as pd
+import threading
+import time
+from datetime import datetime, timedelta
 from .base_adapter import DataSourceAdapter
+from ..utils.retry_utils import RetryStats
 
 
 class XtquantAdapter(DataSourceAdapter):
-    """xtquant数据源适配器"""
+    """xtquant数据源适配器 - 增强版(带重试和心跳保活)"""
 
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
@@ -23,6 +32,41 @@ class XtquantAdapter(DataSourceAdapter):
         # 缓存配置
         self.cache_enabled = config.get('cache_enabled', True)  # 是否启用缓存
         self.cache_only_daily = config.get('cache_only_daily', True)  # 只缓存日K线
+
+        # 重试配置
+        self.retry_times = config.get('retry_times', 2)
+        self.retry_delay = config.get('retry_delay', 0.5)
+        self.retry_backoff = config.get('retry_backoff_factor', 2.0)
+        self.max_retry_delay = config.get('max_retry_delay', 5.0)
+
+        # 连接配置
+        self.connect_timeout = config.get('connect_timeout', 10)
+        self.connect_retry_times = config.get('connect_retry_times', 3)
+        self.connect_retry_delay = config.get('connect_retry_delay', 1.0)
+
+        # 心跳保活配置
+        self.heartbeat_enabled = config.get('heartbeat_enabled', True)
+        self.heartbeat_interval = config.get('heartbeat_interval', 30)  # 秒
+        self.heartbeat_timeout = config.get('heartbeat_timeout', 5)  # 秒
+        self.auto_reconnect = config.get('auto_reconnect', True)
+        self.max_reconnect_attempts = config.get('max_reconnect_attempts', 5)
+
+        # 心跳线程相关
+        self._heartbeat_thread = None
+        self._heartbeat_running = False
+        self._heartbeat_lock = threading.Lock()
+        self.last_heartbeat = None
+
+        # 统计数据
+        self.retry_stats = RetryStats()
+        self.connection_stats = {
+            'connect_count': 0,
+            'disconnect_count': 0,
+            'reconnect_count': 0,
+            'heartbeat_failures': 0,
+            'last_connect_time': None,
+            'last_disconnect_time': None
+        }
 
     def connect(self) -> bool:
         """
@@ -120,7 +164,14 @@ class XtquantAdapter(DataSourceAdapter):
 
             # 三层验证全部通过
             self.is_connected = True
+            self.connection_stats['connect_count'] += 1
+            self.connection_stats['last_connect_time'] = datetime.now()
             self.logger.info(f"{self.name} 连接成功 (三层验证通过)")
+
+            # 自动启动心跳检测
+            if self.heartbeat_enabled and not self._heartbeat_running:
+                self._start_heartbeat()
+
             return True
 
         except Exception as e:
@@ -129,10 +180,165 @@ class XtquantAdapter(DataSourceAdapter):
             self.is_connected = False
             return False
 
+    def _connect_with_retry(self) -> bool:
+        """
+        带重试的连接方法
+
+        Returns:
+            bool: 连接是否成功
+        """
+        for attempt in range(self.connect_retry_times):
+            try:
+                if self.connect():
+                    if attempt > 0:
+                        self.connection_stats['reconnect_count'] += 1
+                        self.logger.info(f"{self.name} 重连成功(第{attempt+1}次尝试)")
+                    return True
+            except Exception as e:
+                self.logger.warning(f"{self.name} 连接尝试{attempt+1}失败: {e}")
+
+            if attempt < self.connect_retry_times - 1:
+                delay = self.connect_retry_delay * (attempt + 1)
+                self.logger.debug(f"等待{delay:.1f}s后重试连接...")
+                time.sleep(delay)
+
+        self.logger.error(f"{self.name} 连接{self.connect_retry_times}次尝试后失败")
+        return False
+
+    def _start_heartbeat(self):
+        """启动心跳检测线程"""
+        if self._heartbeat_running:
+            return
+
+        self._heartbeat_running = True
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            daemon=True,
+            name=f"{self.name}-heartbeat"
+        )
+        self._heartbeat_thread.start()
+        self.logger.info(f"{self.name} 心跳检测已启动(间隔: {self.heartbeat_interval}s)")
+
+    def _stop_heartbeat(self):
+        """停止心跳检测线程"""
+        self._heartbeat_running = False
+        if self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=5)
+            self._heartbeat_thread = None
+        self.logger.debug(f"{self.name} 心跳检测已停止")
+
+    def _heartbeat_loop(self):
+        """心跳检测循环"""
+        while self._heartbeat_running:
+            try:
+                if self.is_connected:
+                    if not self._send_heartbeat():
+                        self.logger.warning(f"{self.name} 心跳失败，尝试重连")
+                        self._handle_connection_lost()
+                time.sleep(self.heartbeat_interval)
+            except Exception as e:
+                self.logger.error(f"{self.name} 心跳检测异常: {e}")
+                time.sleep(self.heartbeat_interval)
+
+    def _send_heartbeat(self) -> bool:
+        """
+        发送心跳请求
+
+        Returns:
+            bool: 心跳是否成功
+        """
+        try:
+            start_time = time.time()
+
+            # 使用get_trading_dates作为心跳(轻量级操作)
+            result = self.xt_data.get_trading_dates(
+                'SH',
+                start_time='20241101',
+                end_time='20241102'
+            )
+
+            elapsed = time.time() - start_time
+
+            if result is None or len(result) == 0:
+                self.logger.debug(f"{self.name} 心跳失败: 数据为空")
+                return False
+
+            if elapsed > self.heartbeat_timeout:
+                self.logger.warning(f"{self.name} 心跳响应过慢: {elapsed:.2f}s")
+                return False
+
+            # 心跳成功
+            with self._heartbeat_lock:
+                self.last_heartbeat = datetime.now()
+
+            self.logger.debug(f"{self.name} 心跳成功({elapsed*1000:.0f}ms)")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"{self.name} 心跳异常: {e}")
+            self.connection_stats['heartbeat_failures'] += 1
+            return False
+
+    def _handle_connection_lost(self):
+        """处理连接丢失"""
+        with self._heartbeat_lock:
+            self.is_connected = False
+            self.connection_stats['disconnect_count'] += 1
+            self.connection_stats['last_disconnect_time'] = datetime.now()
+
+        # 尝试自动重连
+        if self.auto_reconnect:
+            for attempt in range(self.max_reconnect_attempts):
+                self.logger.info(f"{self.name} 尝试自动重连({attempt+1}/{self.max_reconnect_attempts})")
+                if self.connect():
+                    self.connection_stats['reconnect_count'] += 1
+                    self.logger.info(f"{self.name} 自动重连成功")
+                    return
+                time.sleep(self.connect_retry_delay * (attempt + 1))
+
+            self.logger.error(f"{self.name} 自动重连失败，已达最大尝试次数")
+
+    def get_connection_stats(self) -> Dict[str, Any]:
+        """
+        获取连接统计信息
+
+        Returns:
+            连接统计字典
+        """
+        with self._heartbeat_lock:
+            stats = self.connection_stats.copy()
+            stats['is_connected'] = self.is_connected
+            stats['last_heartbeat'] = self.last_heartbeat
+            stats['heartbeat_running'] = self._heartbeat_running
+
+            # 计算连接健康度
+            if self.last_heartbeat:
+                elapsed = (datetime.now() - self.last_heartbeat).total_seconds()
+                stats['heartbeat_age_seconds'] = elapsed
+                if elapsed < self.heartbeat_interval * 2:
+                    stats['connection_health'] = 'good'
+                elif elapsed < self.heartbeat_interval * 5:
+                    stats['connection_health'] = 'degraded'
+                else:
+                    stats['connection_health'] = 'poor'
+            else:
+                stats['heartbeat_age_seconds'] = None
+                stats['connection_health'] = 'unknown'
+
+            # 添加重试统计
+            stats['retry_stats'] = self.retry_stats.get_stats()
+
+            return stats
+
     def disconnect(self):
         """断开连接"""
+        # 停止心跳检测
+        self._stop_heartbeat()
+
         self.xt_data = None
         self.is_connected = False
+        self.connection_stats['disconnect_count'] += 1
+        self.connection_stats['last_disconnect_time'] = datetime.now()
         self.logger.info(f"{self.name} 已断开连接")
 
     def _convert_code(self, code: str) -> str:
@@ -437,54 +643,173 @@ class XtquantAdapter(DataSourceAdapter):
 
     def get_tick(self, code: str) -> Optional[Dict[str, Any]]:
         """
-        获取实时tick数据
+        获取实时tick数据 - 增强版(带智能重试)
 
         Args:
             code: 股票代码
 
         Returns:
             实时行情字典
+
+        重试策略:
+        1. 连接失败: 使用_connect_with_retry重试连接
+        2. 数据获取失败: 重试retry_times次，带指数退避
+        3. 数据校验失败: 不重试(数据问题，非临时错误)
         """
-        if not self.is_connected:
-            if not self.connect():
-                # 降级处理:返回None,让上层切换到其他数据源
+        xt_code = self._convert_code(code)
+        delay = self.retry_delay
+        attempts = 0
+
+        for attempt in range(self.retry_times + 1):
+            attempts += 1
+            try:
+                # 检查连接状态
+                if not self.is_connected:
+                    if not self._connect_with_retry():
+                        if attempt < self.retry_times:
+                            self.logger.debug(
+                                f"get_tick连接失败，重试 {attempt+1}/{self.retry_times}"
+                            )
+                            time.sleep(delay)
+                            delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                            continue
+                        self.retry_stats.record_failure(attempts)
+                        return None
+
+                # 获取实时行情
+                tick = self.xt_data.get_full_tick([xt_code])
+
+                if not tick or xt_code not in tick:
+                    self.logger.warning(
+                        f"xtquant未获取到实时行情: {code} [尝试{attempt+1}/{self.retry_times+1}]"
+                    )
+                    if attempt < self.retry_times:
+                        time.sleep(delay)
+                        delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                        continue
+                    self.retry_stats.record_failure(attempts)
+                    return None
+
+                tick_data_raw = tick[xt_code]
+
+                # 转换为统一格式
+                tick_data = {
+                    'code': self.normalize_code(code),
+                    'name': tick_data_raw.get('stockName', ''),
+                    'open': tick_data_raw.get('open', 0),
+                    'high': tick_data_raw.get('high', 0),
+                    'low': tick_data_raw.get('low', 0),
+                    'close': tick_data_raw.get('lastClose', 0),
+                    'last': tick_data_raw.get('lastPrice', 0),
+                    'volume': tick_data_raw.get('volume', 0),
+                    'amount': tick_data_raw.get('amount', 0),
+                    'bid': tick_data_raw.get('bidPrice', [0])[0] if tick_data_raw.get('bidPrice') else 0,
+                    'ask': tick_data_raw.get('askPrice', [0])[0] if tick_data_raw.get('askPrice') else 0,
+                    'yesterday_close': tick_data_raw.get('lastClose', 0),
+                    'source': 'xtquant'
+                }
+
+                # 数据校验(校验失败不重试)
+                if not self._validate_tick_data(tick_data, code):
+                    self.logger.warning(f"tick数据校验失败: {code}")
+                    self.retry_stats.record_failure(attempts)
+                    return None
+
+                # 成功
+                self.retry_stats.record_success(attempts)
+                return tick_data
+
+            except Exception as e:
+                self.logger.error(
+                    f"xtquant获取tick失败 {code}: {e} [尝试{attempt+1}/{self.retry_times+1}]"
+                )
+                self.last_error = str(e)
+                self.error_count += 1
+
+                if attempt < self.retry_times:
+                    time.sleep(delay)
+                    delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                    continue
+
+                self.retry_stats.record_failure(attempts)
                 return None
 
-        try:
-            xt_code = self._convert_code(code)
+        self.retry_stats.record_failure(attempts)
+        return None
 
-            # 获取实时行情
-            tick = self.xt_data.get_full_tick([xt_code])
+    def get_realtime_quotes(self, codes: List[str]) -> Optional[Dict[str, Dict[str, Any]]]:
+        """
+        批量获取实时行情 - 新增方法
 
-            if not tick or xt_code not in tick:
-                self.logger.warning(f"xtquant未获取到实时行情: {code}")
+        Args:
+            codes: 股票代码列表
+
+        Returns:
+            {code: tick_data} 字典，失败返回None
+
+        性能优势:
+        - 批量获取比循环调用get_tick效率高
+        - 单次网络请求获取多只股票
+        """
+        if not codes:
+            return {}
+
+        # 转换代码格式
+        xt_codes = [self._convert_code(code) for code in codes]
+        delay = self.retry_delay
+
+        for attempt in range(self.retry_times + 1):
+            try:
+                if not self.is_connected:
+                    if not self._connect_with_retry():
+                        if attempt < self.retry_times:
+                            time.sleep(delay)
+                            delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                            continue
+                        return None
+
+                # 批量获取
+                ticks = self.xt_data.get_full_tick(xt_codes)
+
+                if not ticks:
+                    if attempt < self.retry_times:
+                        self.logger.warning(
+                            f"批量获取实时行情为空 [尝试{attempt+1}/{self.retry_times+1}]"
+                        )
+                        time.sleep(delay)
+                        delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                        continue
+                    return None
+
+                # 转换格式
+                result = {}
+                for code, xt_code in zip(codes, xt_codes):
+                    if xt_code in ticks:
+                        tick_raw = ticks[xt_code]
+                        tick_data = {
+                            'code': self.normalize_code(code),
+                            'name': tick_raw.get('stockName', ''),
+                            'last': tick_raw.get('lastPrice', 0),
+                            'open': tick_raw.get('open', 0),
+                            'high': tick_raw.get('high', 0),
+                            'low': tick_raw.get('low', 0),
+                            'volume': tick_raw.get('volume', 0),
+                            'amount': tick_raw.get('amount', 0),
+                            'source': 'xtquant'
+                        }
+                        result[code] = tick_data
+
+                return result if result else None
+
+            except Exception as e:
+                self.logger.error(f"批量获取实时行情失败: {e}")
+                if attempt < self.retry_times:
+                    time.sleep(delay)
+                    delay = min(delay * self.retry_backoff, self.max_retry_delay)
+                    continue
                 return None
 
-            tick_data_raw = tick[xt_code]
-
-            # 转换为统一格式
-            tick_data = {
-                'code': self.normalize_code(code),
-                'name': tick_data_raw.get('stockName', ''),
-                'open': tick_data_raw.get('open', 0),
-                'high': tick_data_raw.get('high', 0),
-                'low': tick_data_raw.get('low', 0),
-                'close': tick_data_raw.get('lastClose', 0),
-                'last': tick_data_raw.get('lastPrice', 0),
-                'volume': tick_data_raw.get('volume', 0),
-                'amount': tick_data_raw.get('amount', 0),
-                'bid': tick_data_raw.get('bidPrice', [0])[0] if tick_data_raw.get('bidPrice') else 0,
-                'ask': tick_data_raw.get('askPrice', [0])[0] if tick_data_raw.get('askPrice') else 0,
-                'yesterday_close': tick_data_raw.get('lastClose', 0)
-            }
-
-            return tick_data
-
-        except Exception as e:
-            self.logger.error(f"xtquant获取tick失败 {code}: {e}")
-            self.last_error = str(e)
-            self.error_count += 1
-            return None
+        return None
 
     def health_check(self) -> Dict[str, Any]:
         """

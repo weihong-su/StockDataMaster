@@ -37,7 +37,20 @@
       "fallback_to_5m": true,
       "qmt_path": "",
       "account": "",
-      "comment": "实时Tick主数据源(需QMT客户端运行)"
+      "retry_delay": 0.5,
+      "retry_backoff_factor": 2.0,
+      "max_retry_delay": 5.0,
+      "connect_timeout": 10,
+      "connect_retry_times": 3,
+      "connect_retry_delay": 1.0,
+      "heartbeat_enabled": true,
+      "heartbeat_interval": 30,
+      "heartbeat_timeout": 5,
+      "auto_reconnect": true,
+      "max_reconnect_attempts": 5,
+      "cache_enabled": true,
+      "cache_only_daily": true,
+      "comment": "实时Tick主数据源(需QMT客户端运行) - 增强版:支持心跳保活和智能重试"
     }
   },
   "cache": {

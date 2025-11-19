@@ -144,6 +144,16 @@ class StockDataMaster:
         Returns:
             DataFrame,包含date,open,high,low,close,volume,amount列
         """
+        # 边界条件检查: 空股票代码
+        if not code or not code.strip():
+            self.logger.warning("股票代码不能为空")
+            return None
+
+        # 边界条件检查: count为0或负数
+        if count is not None and count <= 0:
+            self.logger.warning(f"count参数无效: {count}, 返回空DataFrame")
+            return pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume', 'amount'])
+
         # 标准化代码
         code = self._normalize_code(code)
 
