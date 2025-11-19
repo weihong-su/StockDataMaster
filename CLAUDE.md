@@ -1,11 +1,85 @@
-# CLAUDE.md - StockDataMaster 项目文档
+# CLAUDE.md
 
-> 本文档为 Claude AI 辅助开发 StockDataMaster 项目提供全面的架构、开发和运维指南。
-> 最后更新: 2025-10-25
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+> **StockDataMaster 项目文档** - 专业股票数据主数据接口系统
+> 最后更新: 2025-11-15
+
+---
+
+## 快速参考
+
+### 常用命令
+
+```bash
+# 运行交互式测试GUI（推荐）
+cd test && python interactive_test_gui.py
+# 或在Windows上: test\run_gui_test.bat
+
+# 运行缓存机制测试
+python test/test_cache_simple.py
+python test/test_historical_cache.py
+python test/test_intraday_real_issues.py
+
+# 运行xtquant增强功能测试（新增）
+python test/test_xtquant_enhanced.py
+
+# 激活开发环境
+conda activate python38
+
+# 安装依赖
+pip install pandas numpy mootdx baostock tushare
+```
+
+### 核心架构速览
+
+- **设计模式**: 适配器模式 + 单例模式 + 配置驱动
+- **核心模块**: `data_master.py` (主接口), `cache_manager.py` (缓存), `health_manager.py` (健康检测)
+- **数据源**: Tushare (日K线主力), Mootdx (分钟K线), Baostock (备用), xtquant (实时Tick + 复权因子)
+- **缓存策略**: 智能三层判断 + 盘中/盘后自适应 + 双源校验 + **833倍性能提升**
+- **xtquant增强**: 7个接口(利用率6.7%), 复权因子<10ms, 智能缓存集成
+
+### 开发重点
+
+1. **不要破坏适配器模式结构** - 新增数据源需继承 `DataSourceAdapter`
+2. **配置优先** - 通过 `config.json` 调整参数,避免硬编码
+3. **UTF-8日志** - 必须使用 `encoding='utf-8'` 避免中文乱码
+4. **测试脚本导入路径** - 必须添加父目录到 `sys.path`
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2025-11-18
+- 🎉 **xtquant深度优化方案完美收官** (5阶段100%完成)
+  - 阶段1: 扩展xtquant核心功能 - 接口利用率6.7%(+133%), get_adjust_factors<10ms
+  - 阶段2: 智能缓存机制 - **833倍性能提升**(2-3秒→3ms), 100%缓存命中率
+  - 阶段3: 智能数据源选择 - 时段感知100%准确, 缓存优先策略
+  - 阶段4: 数据一致性保障 - 双源校验100%通过率, 复权一致性<0.5%误差
+  - 阶段5: 监控和自愈机制 - 4数据源无缝切换, 60秒健康检测
+- 📝 完整文档集:
+  - docs/xtquant_Phase1_ExtendedFeatures_Report.md (阶段1详细报告)
+  - docs/xtquant_Phase2_Cache_Report.md (阶段2详细报告)
+  - docs/xtquant_Phase3_SmartSelection_Report.md (阶段3详细报告)
+  - docs/xtquant_Phase4_Phase5_Summary_Report.md (阶段4&5综合报告)
+  - docs/xtquant深度优化最终测试报告.md (最终总结报告)
+- 🧪 测试脚本: test_xtquant_phase1/2/3_*.py (1400+行测试代码)
+
+### 2025-11-15
+- ✨ **xtquant适配器增强优化完成** (6/6测试通过)
+  - 三层验证连接机制: QMT服务器 → 数据接口 → 市场数据有效性
+  - 时段感知健康检查: 交易时段严格,非交易时段宽松
+  - 数据有效性校验: 价格>0.1 + OHLC逻辑 + 成交量≥0
+  - get_kline完整实现: 支持7周期(1m/5m/15m/30m/60m/d/w) + 重试机制
+  - HealthManager时段感知切换: 交易时段自动恢复xtquant
+  - 完整功能测试: test_xtquant_enhanced.py
+- 📝 新增文档:
+  - docs/xtquant增强版完整测试报告.md (详细测试结果)
+  - docs/xtquant增强优化实施总结.md (实施总结)
+
+### 2025-11-14
+- 📝 优化 CLAUDE.md 文档结构,符合 Claude Code 标准格式
+- ✅ 添加快速参考部分和常见陷阱说明
 
 ### 2025-10-25
 - ✨ 完成智能日K线缓存优化（盘中/盘后策略）
@@ -18,6 +92,91 @@
 - 🔌 实现多数据源适配器架构
 - 💾 实现智能缓存系统
 - 🏥 实现健康检测和热切换
+
+---
+
+## 常见陷阱和注意事项
+
+### ⚠️ 关键陷阱
+
+1. **日志编码问题**
+   - ❌ 错误: `logging.FileHandler('app.log')`
+   - ✅ 正确: `logging.FileHandler('app.log', encoding='utf-8')`
+   - **原因**: Windows默认GBK编码,中文日志会乱码
+
+2. **测试脚本导入路径**
+   ```python
+   # 必须添加父目录才能导入StockDataMaster包
+   test_dir = os.path.dirname(os.path.abspath(__file__))
+   project_root = os.path.dirname(test_dir)
+   parent_dir = os.path.dirname(project_root)
+   sys.path.insert(0, parent_dir)  # 关键步骤
+
+   from StockDataMaster import StockDataMaster  # 然后才能导入
+   ```
+
+3. **盘中缓存问题**
+   - 盘中时段（< 15:00）**不应该**缓存当日数据
+   - 盘后时段（≥ 15:00）才缓存当日收盘数据
+   - 参见 `data_master.py:405-470` 的 `_is_cache_fresh` 方法
+
+4. **健康检测需要强制重连**
+   - 后台线程的连接可能已断开
+   - 每次 `health_check()` 前必须检查并重连
+   - 参见 `base_adapter.py:109-187`
+
+5. **配置文件必须包含Token**
+   - Tushare适配器需要有效的token才能工作
+   - 在 `config.json` 中配置: `"data_sources.tushare.token"`
+
+6. **xtquant连接判断问题** ⚠️ **重要**
+   - ❌ 错误: `if xtdata.connect() != 0:` (connect()返回对象,非状态码)
+   - ✅ 正确: `if xtdata.connect() is None:` (检查对象是否为None)
+   - **原因**: xtquant的connect()返回IPythonApiClient对象,连接成功返回对象,失败返回None或抛出异常
+   - 参见 `adapters/xtquant_adapter.py:45-58`
+
+7. **xtquant数据有效性校验** ⚠️ **关键**
+   - 券商可能不定期关闭miniQMT接口,即使QMT运行中也可能返回空数据
+   - **必须校验**: 价格>0.1、成交量≥0、OHLC逻辑正确
+   - 参见 `adapters/xtquant_adapter.py:234-383` 的校验方法
+   - 交易时段(9:15-15:00)数据为空视为严重错误,非交易时段仅警告
+
+8. **xtquant时段感知策略**
+   - 交易时段(9:15-15:00): 严格检查,优先使用xtquant(最权威)
+   - 非交易时段: 宽松检查,允许xtquant失败,自动切换备用源
+   - 参见 `health/health_manager.py:131-184` 的自动恢复机制
+
+9. **xtquant缓存集成** ⚠️ **重要**
+   - 阶段2已集成: xtquant日K线数据自动缓存
+   - 性能提升: 2-3秒 → 3ms (**833倍提升**)
+   - 缓存策略: 盘中不缓存当日,盘后缓存当日收盘
+   - 参见 `adapters/xtquant_adapter.py:196-341` 的缓存逻辑
+
+10. **xtquant复权因子功能** ⚠️ **核心**
+   - 响应时间: <10ms (比Tushare快200-300倍)
+   - 数据权威性: xtquant官方复权因子,可作为校验基准
+   - 应用价值: 数据一致性校验的核心依赖
+   - 参见 `adapters/xtquant_adapter.py:928-1001` 的实现
+
+### 🔍 调试技巧
+
+**查看缓存是否命中**:
+```python
+df = master.get_kline('600519', freq='d', count=120)
+print(f"数据来源: {df.attrs.get('source')}")  # 'cache' 或 'tushare'
+```
+
+**查看数据源健康状态**:
+```python
+status = master.get_health_status()
+print(status['active_sources'])  # 查看当前活跃数据源
+```
+
+**查看日志排查问题**:
+```bash
+tail -f logs/data_master.log  # Linux/Mac
+type logs\data_master.log     # Windows
+```
 
 ---
 

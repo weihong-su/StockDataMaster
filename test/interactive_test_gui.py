@@ -1128,12 +1128,19 @@ class InteractiveTestGUI:
                 log_to_file(f"  当前非交易时段，获取上一交易日数据: {target_date}")
 
             # 获取5分钟K线数据（更稳定）
+            # 🔥 修复: 增加count从60→120，确保能获取到完整一天的数据(1天48条+前一天数据)
             log_to_file(f"  获取5分钟K线数据...")
-            df_5min = self.master.get_kline(stock_code, freq='5', count=60)  # 60条足够一天
+            df_5min = self.master.get_kline(stock_code, freq='5', count=120)
 
             if df_5min is None or df_5min.empty:
                 log_to_file(f"  K线数据为空")
                 return None
+
+            # 🔥 增强日志: 显示原始数据信息
+            log_to_file(f"  原始数据条数: {len(df_5min)}")
+            if len(df_5min) > 0:
+                log_to_file(f"  原始数据日期范围: {df_5min['date'].min()} 到 {df_5min['date'].max()}")
+                log_to_file(f"  原始数据来源: {df_5min.attrs.get('source', 'unknown')}")
 
             # 【修复: 筛选目标日期的数据】
             target_date_str = target_date.strftime('%Y-%m-%d')
@@ -1146,14 +1153,39 @@ class InteractiveTestGUI:
                 df_5min['datetime_parsed'] = pd.to_datetime(df_5min['date'], format='mixed', errors='coerce')
                 df_target = df_5min[df_5min['datetime_parsed'].dt.date == target_date].copy()
 
-            log_to_file(f"  目标日期({target_date_str})数据条数: {len(df_target)}")
+            log_to_file(f"  目标日期({target_date_str})筛选后数据条数: {len(df_target)}")
 
-            # 如果目标日期数据不足,使用最近数据
+            # 🔥 增强日志: 如果筛选后数据少于48条,记录详细信息
+            if len(df_target) < 48:
+                log_to_file(f"  ⚠️ 警告: 目标日期数据不足48条!")
+                if len(df_target) > 0:
+                    log_to_file(f"  筛选后日期范围: {df_target['date'].min()} 到 {df_target['date'].max()}")
+                else:
+                    log_to_file(f"  筛选结果为空,将使用最近数据替代")
+
+            # 如果目标日期数据不足,使用最近数据或重新获取
             if len(df_target) < 5:
-                log_to_file(f"  目标日期数据不足")
+                log_to_file(f"  目标日期数据严重不足(<5条)")
                 if df_target.empty:
-                    df_target = df_5min.tail(48).copy()
-                    log_to_file(f"  使用最近数据替代: {len(df_target)} 条")
+                    # 🔥 修复: 尝试使用日期范围重新获取数据
+                    log_to_file(f"  尝试使用日期范围重新获取: start={target_date}, end={target_date}")
+                    try:
+                        df_target = self.master.get_kline(
+                            stock_code,
+                            freq='5',
+                            start_date=target_date.strftime('%Y%m%d'),
+                            end_date=target_date.strftime('%Y%m%d')
+                        )
+                        if df_target is not None and not df_target.empty:
+                            log_to_file(f"  重新获取成功: {len(df_target)} 条")
+                        else:
+                            # 最后的兜底: 使用最近48条数据
+                            df_target = df_5min.tail(48).copy()
+                            log_to_file(f"  使用最近数据替代: {len(df_target)} 条")
+                    except Exception as e:
+                        log_to_file(f"  重新获取失败: {e}")
+                        df_target = df_5min.tail(48).copy()
+                        log_to_file(f"  使用最近数据替代: {len(df_target)} 条")
 
             # 【关键修复: 确保有datetime列且格式正确】
             if 'datetime' not in df_target.columns:

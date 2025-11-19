@@ -70,10 +70,15 @@ class HealthManager:
         self.logger.info("健康监控线程已停止")
 
     def _monitor_loop(self):
-        """健康监控循环"""
+        """健康监控循环 - 增强版(交易时段感知)"""
         while self.is_running:
             try:
+                # 1. 检查所有数据源健康状态
                 self.check_all_sources()
+
+                # 2. 交易时段自动恢复xtquant
+                self._auto_recover_xtquant()
+
                 time.sleep(self.check_interval)
             except Exception as e:
                 self.logger.error(f"健康监控异常: {e}")
@@ -128,15 +133,88 @@ class HealthManager:
                     self.logger.error(f"{name} 健康检查异常: {e}")
                     self.failure_counts[name] = self.failure_counts.get(name, 0) + 1
 
+    def _auto_recover_xtquant(self):
+        """
+        交易时段自动恢复xtquant数据源
+
+        逻辑:
+        1. 检查当前是否在交易时段(9:15-15:00)
+        2. 如果xtquant可用但不是活跃数据源,尝试恢复
+        3. xtquant在交易时段最权威,应优先使用
+        """
+        from datetime import datetime, time as time_type
+
+        # 判断是否为交易时段
+        now = datetime.now()
+        current_time = now.time()
+        market_start = time_type(9, 15)
+        market_end = time_type(15, 0)
+        is_trading_hours = market_start <= current_time <= market_end
+
+        if not is_trading_hours:
+            return  # 非交易时段不自动恢复
+
+        # 检查xtquant是否存在且可用
+        if 'xtquant' not in self.adapters:
+            return
+
+        xtquant_health = self.health_status.get('xtquant', {})
+        if xtquant_health.get('status') != 'ok':
+            return  # xtquant不健康,不恢复
+
+        # 检查xtquant的用途
+        xtquant_adapter = self.adapters['xtquant']
+        xtquant_uses = xtquant_adapter.config.get('use_for', [])
+
+        # 尝试恢复每个用途
+        for usage in xtquant_uses:
+            current_source = self.active_sources.get(usage)
+
+            # 如果当前不是xtquant,且xtquant可用,则切换回xtquant
+            if current_source != 'xtquant':
+                with self.lock:
+                    old_source = self.active_sources[usage]
+                    self.active_sources[usage] = 'xtquant'
+                    self.logger.info(
+                        f"[交易时段] {usage}数据源已恢复: {old_source} -> xtquant (xtquant更权威)"
+                    )
+
+                    # 记录切换历史
+                    self.switch_history.append({
+                        'time': datetime.now(),
+                        'usage': usage,
+                        'from': old_source,
+                        'to': 'xtquant',
+                        'reason': '交易时段自动恢复xtquant(更权威)'
+                    })
+
     def _trigger_switch(self, failed_source: str, reason: str):
         """
-        触发数据源切换
+        触发数据源切换 - 增强版(时段感知)
 
         Args:
             failed_source: 失败的数据源名称
             reason: 切换原因
+
+        时段感知逻辑:
+        1. 交易时段(9:15-15:00): xtquant失败时严格切换
+        2. 非交易时段: xtquant失败属正常,不频繁切换
         """
-        self.logger.warning(f"触发数据源切换: {failed_source}, 原因: {reason}")
+        from datetime import datetime, time as time_type
+
+        # 判断是否为交易时段
+        now = datetime.now()
+        current_time = now.time()
+        market_start = time_type(9, 15)
+        market_end = time_type(15, 0)
+        is_trading_hours = market_start <= current_time <= market_end
+
+        # 如果是xtquant在非交易时段失败,降低日志级别
+        if failed_source == 'xtquant' and not is_trading_hours:
+            self.logger.debug(f"[非交易时段] xtquant失败属正常: {reason}")
+            # 仍然切换,但不记录WARNING
+        else:
+            self.logger.warning(f"触发数据源切换: {failed_source}, 原因: {reason}")
 
         # 获取失败数据源的用途
         failed_adapter = self.adapters.get(failed_source)
