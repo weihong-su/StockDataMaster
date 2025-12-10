@@ -38,7 +38,8 @@ class HealthManager:
 
         # 当前活跃数据源(按用途分类)
         self.active_sources = {
-            'kline': None,
+            'kline_day': None,      # 日K线活跃源
+            'kline_minute': None,   # 分钟K线活跃源
             'valuation': None,
             'tick': None
         }
@@ -287,20 +288,30 @@ class HealthManager:
 
     def get_active_source(self, usage: str) -> Optional[str]:
         """
-        获取当前活跃的数据源
+        获取当前活跃的数据源（兼容抽象类型和细分类型）
 
         Args:
-            usage: 用途类型 (kline/valuation/tick)
+            usage: 用途类型，支持抽象类型和细分类型
+                - 抽象类型: 'kline', 'valuation', 'tick'
+                - 细分类型: 'kline_day', 'kline_minute', 'valuation', 'tick'
 
         Returns:
-            数据源名称
+            数据源名称，未找到返回 None
         """
+        # 抽象类型到细分类型的映射
+        type_mapping = {
+            'kline': 'kline_day',  # 默认映射到日K线
+        }
+
+        # 如果是抽象类型，转换为细分类型
+        actual_type = type_mapping.get(usage, usage)
+
         with self.lock:
             # 如果还没有活跃数据源,选择一个
-            if self.active_sources.get(usage) is None:
-                self.active_sources[usage] = self._find_backup_source(usage)
+            if self.active_sources.get(actual_type) is None:
+                self.active_sources[actual_type] = self._find_backup_source(usage)
 
-            return self.active_sources[usage]
+            return self.active_sources[actual_type]
 
     def get_health_report(self) -> Dict[str, Any]:
         """

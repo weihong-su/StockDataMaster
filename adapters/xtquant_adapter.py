@@ -706,7 +706,9 @@ class XtquantAdapter(DataSourceAdapter):
                     'bid': tick_data_raw.get('bidPrice', [0])[0] if tick_data_raw.get('bidPrice') else 0,
                     'ask': tick_data_raw.get('askPrice', [0])[0] if tick_data_raw.get('askPrice') else 0,
                     'yesterday_close': tick_data_raw.get('lastClose', 0),
-                    'source': 'xtquant'
+                    'source': 'xtquant',
+                    # 修复: 添加时间戳字段映射
+                    'timestamp': self._convert_tick_timestamp(tick_data_raw.get('time'))
                 }
 
                 # 数据校验(校验失败不重试)
@@ -978,6 +980,39 @@ class XtquantAdapter(DataSourceAdapter):
         except Exception as e:
             self.logger.error(f"K线数据校验失败: {e}")
             return False
+
+    def _convert_tick_timestamp(self, time_value: Optional[int]) -> Optional[str]:
+        """
+        转换 xtquant 的 Unix 时间戳(毫秒) 为标准时间字符串
+
+        Args:
+            time_value: Unix 时间戳(毫秒)，如 1702367400000
+
+        Returns:
+            时间字符串 'YYYY-MM-DD HH:MM:SS'，失败返回None
+
+        示例:
+            1702367400000 -> '2023-12-12 14:30:00'
+        """
+        if time_value is None or time_value == 0:
+            self.logger.warning("Tick数据缺少时间戳字段")
+            return None
+
+        try:
+            from datetime import datetime
+
+            # xtquant 使用毫秒时间戳，需要除以1000转换为秒
+            timestamp_sec = time_value / 1000
+
+            # 转换为datetime对象
+            dt = datetime.fromtimestamp(timestamp_sec)
+
+            # 格式化为标准字符串
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        except Exception as e:
+            self.logger.error(f"时间戳转换失败: {time_value}, 错误: {e}")
+            return None
 
     def _validate_tick_data(self, tick: Dict[str, Any], code: str) -> bool:
         """
