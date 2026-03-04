@@ -1,25 +1,53 @@
-.spec-workflow/config.example.toml
-.spec-workflow/templates/design-template.md
-.spec-workflow/templates/product-template.md
-.spec-workflow/templates/requirements-template.md
-.spec-workflow/templates/structure-template.md
-.spec-workflow/templates/tasks-template.md
-.spec-workflow/templates/tech-template.md
-.spec-workflow/user-templates/README.md
-__pycache__/__init__.cpython-38.pyc
-__pycache__/config.cpython-38.pyc
-__pycache__/data_master.cpython-38.pyc
-adapters/__pycache__/__init__.cpython-38.pyc
-adapters/__pycache__/baostock_adapter.cpython-38.pyc
-adapters/__pycache__/base_adapter.cpython-38.pyc
-adapters/__pycache__/mootdx_adapter.cpython-38.pyc
-adapters/__pycache__/tushare_adapter.cpython-38.pyc
-adapters/__pycache__/xtquant_adapter.cpython-38.pyc
-cache/__pycache__/__init__.cpython-38.pyc
-cache/__pycache__/cache_manager.cpython-38.pyc
-health/__pycache__/__init__.cpython-38.pyc
-health/__pycache__/health_manager.cpython-38.pyc
+# ─── Python 缓存 ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
 
+# ─── 虚拟环境 ─────────────────────────────────────────────────────────────────
+.env
+.venv
+env/
+venv/
+
+# ─── 日志文件 ─────────────────────────────────────────────────────────────────
 /logs/*
+!logs/.gitkeep
+
+# ─── 文档（本地生成，不提交）──────────────────────────────────────────────────
 /docs/*
-/test/*
+
+# ─── 测试文件（旧的独立测试脚本保留，但不追踪旧pycache）─────────────────────
+# 注意：test/suite/ 目录（pytest框架）应全部提交
+
+# ─── 缓存数据库 ───────────────────────────────────────────────────────────────
+cache/*.db
+cache/*.db-shm
+cache/*.db-wal
+
+# ─── 备份文件 ─────────────────────────────────────────────────────────────────
+*.backup
+*.bak
+
+# ─── 系统文件 ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+nul
+
+# ─── IDE ────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── 测试报告和临时文件 ───────────────────────────────────────────────────────
+test/reports/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# ─── spec-workflow 模板（不需要提交）────────────────────────────────────────
+.spec-workflow/config.example.toml
+.spec-workflow/templates/
+.spec-workflow/user-templates/README.md

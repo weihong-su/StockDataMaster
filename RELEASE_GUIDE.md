@@ -20,12 +20,29 @@
 在发布前，请确保完成以下检查：
 
 ### 代码质量
-- [ ] 所有测试通过
+
+> **⚠️ 必须步骤**：运行发布前强制检查脚本，所有检查通过才可发布：
+>
+> ```bash
+> # 标准检查（含 git 工作区验证）
+> python scripts/pre_release_check.py --version X.Y.Z
+>
+> # CI/CD 环境跳过 git 检查
+> python scripts/pre_release_check.py --version X.Y.Z --skip-git
+> ```
+>
+> 脚本会自动验证：版本号一致性、CHANGELOG 记录、单元测试（87项）、git 状态。
+
+- [ ] **发布前检查脚本通过** (`python scripts/pre_release_check.py`)
+- [ ] 单元测试全部通过（pytest -m unit，87项）
   ```bash
-  cd test
-  python interactive_test_gui.py
+  # Windows 下需加 -X utf8 处理中文
+  python -X utf8 -m pytest test/suite -m unit -v
   ```
-- [ ] 代码通过基本功能测试
+- [ ] 集成测试验证（可选，需网络）
+  ```bash
+  python -X utf8 -m pytest test/suite -m integration -v
+  ```
 - [ ] 日志文件已清理（`logs/` 目录）
 - [ ] 临时文件已删除
 

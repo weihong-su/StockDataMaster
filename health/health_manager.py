@@ -308,8 +308,11 @@ class HealthManager:
 
         with self.lock:
             # 如果还没有活跃数据源,选择一个
+            # 修复: 使用 actual_type (细分类型) 而非 usage (抽象类型) 查找备用源
+            # 原因: 适配器 use_for 配置中使用细分类型 ('kline_day'),
+            #       若传入抽象类型 ('kline') 将无法匹配任何数据源
             if self.active_sources.get(actual_type) is None:
-                self.active_sources[actual_type] = self._find_backup_source(usage)
+                self.active_sources[actual_type] = self._find_backup_source(actual_type)
 
             return self.active_sources[actual_type]
 
