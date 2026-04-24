@@ -1421,3 +1421,53 @@ class XtquantAdapter(DataSourceAdapter):
             self.last_error = str(e)
             self.error_count += 1
             return None
+
+    def get_stock_name(self, code: str) -> Optional[str]:
+        """
+        通过 xtdata 获取股票名称
+
+        Args:
+            code: 股票代码,支持 '600519' / 'sh.600519' / '600519.SH' 格式
+
+        Returns:
+            股票名称,失败返回 None
+        """
+        if not self.is_connected:
+            if not self.connect():
+                return None
+
+        try:
+            # 标准化为 xtquant 格式
+            xt_code = self._normalize_to_xt_code(code)
+            detail = self.xt_data.get_instrument_detail(xt_code)
+
+            if detail:
+                name = detail.get('InstrumentName') or detail.get('instrumentName') or detail.get('name')
+                if name:
+                    self.logger.debug(f"xtquant获取股票名称: {code} -> {name}")
+                    return name
+
+            self.logger.debug(f"xtquant未获取到{code}的股票详情")
+            return None
+
+        except Exception as e:
+            self.logger.debug(f"xtquant获取股票名称失败 {code}: {e}")
+            return None
+
+    def _normalize_to_xt_code(self, code: str) -> str:
+        """
+        标准化股票代码为 xtquant 格式
+
+        '600519' -> '600519.SH'
+        'sh.600519' -> '600519.SH'
+        '600519.SH' -> '600519.SH'
+        """
+        # 去掉 sh./sz. 前缀
+        clean = code.replace('sh.', '').replace('sz.', '')
+        # 去掉 .SH/.SZ 后缀
+        if '.' in clean:
+            clean = clean.split('.')[0]
+        # 判断市场
+        if clean.startswith(('6', '510', '511', '518', '688', '689')):
+            return f"{clean}.SH"
+        return f"{clean}.SZ"
