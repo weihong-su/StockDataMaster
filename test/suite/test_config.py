@@ -160,3 +160,82 @@ def test_missing_file_raises():
     from StockDataMaster.config import Config
     with pytest.raises(FileNotFoundError):
         Config("/nonexistent/path/config.json")
+
+
+# ─── 测试：roles 格式解析 ─────────────────────────────────────────────────────
+
+class TestRolesConfig:
+    """roles 格式配置解析测试"""
+
+    def test_get_sources_by_role_kline_day(self, temp_cache_config):
+        """按角色获取日线数据源列表"""
+        from StockDataMaster.config import Config
+        sources = temp_cache_config.get_sources_by_role('kline_day')
+        assert sources == ['tushare', 'mootdx', 'baostock']
+
+    def test_get_sources_by_role_kline_minute(self, temp_cache_config):
+        """按角色获取分钟线数据源列表"""
+        from StockDataMaster.config import Config
+        sources = temp_cache_config.get_sources_by_role('kline_minute')
+        assert sources == ['xtquant', 'mootdx', 'baostock']
+
+    def test_get_sources_by_role_tick(self, temp_cache_config):
+        """按角色获取tick数据源列表"""
+        from StockDataMaster.config import Config
+        sources = temp_cache_config.get_sources_by_role('tick')
+        assert sources == ['xtquant']
+
+    def test_get_sources_by_role_trading_filters_timeslot(self, temp_cache_config):
+        """交易时段角色: 只返回 time_slot 匹配或无 time_slot 的源"""
+        from StockDataMaster.config import Config
+        # trading 时段: xtquant 有 time_slot="trading", 应包含
+        sources = temp_cache_config.get_sources_by_role('validation', time_slot='trading')
+        assert 'xtquant' in sources
+
+    def test_get_sources_by_role_after_hours_excludes_trading_only(self, temp_cache_config):
+        """盘后时段: 排除 time_slot="trading" 的源"""
+        from StockDataMaster.config import Config
+        sources = temp_cache_config.get_sources_by_role('validation', time_slot='after_hours')
+        assert 'xtquant' not in sources
+        assert 'baostock' in sources
+
+    def test_get_validation_config(self, temp_cache_config):
+        """获取投票校验配置"""
+        from StockDataMaster.config import Config
+        vc = temp_cache_config.get_validation_config()
+        assert vc['mode'] == 'voting'
+        assert vc['quorum'] == 2
+        assert vc['strategy'] == 'first_to_quorum'
+
+    def test_get_stock_name_config_defaults(self, temp_cache_config):
+        """获取 stock_name 配置"""
+        from StockDataMaster.config import Config
+        snc = temp_cache_config.get_stock_name_config()
+        assert snc['baostock_max_consecutive_failures'] == 3
+        assert snc['baostock_retry_cooldown'] == 300
+
+    def test_legacy_config_auto_migrate(self):
+        """旧格式 use_for 自动迁移为 roles"""
+        import tempfile, json, os
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump({
+                "data_sources": {
+                    "tushare": {
+                        "enabled": True,
+                        "priority": 1,
+                        "use_for": ["kline_day"],
+                        "token": "test"
+                    }
+                },
+                "cache": {"enabled": True},
+                "health_check": {"enabled": False}
+            }, f)
+            path = f.name
+        try:
+            from StockDataMaster.config import Config
+            cfg = Config(path)
+            # _migrate_legacy_config 应自动补充 roles
+            sources = cfg.get_sources_by_role('kline_day')
+            assert 'tushare' in sources
+        finally:
+            os.unlink(path)

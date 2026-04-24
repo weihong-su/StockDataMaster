@@ -108,6 +108,93 @@ class Config:
         matched.sort(key=lambda x: x[1].get('priority', 999))
         return [name for name, _ in matched]
 
+    def get_sources_by_role(self, role: str, time_slot: str = None) -> list:
+        """
+        按 roles 获取支持特定角色的数据源列表,按时段过滤并按优先级排序
+
+        Args:
+            role: 角色 (kline_day/kline_minute/tick/validation)
+            time_slot: 时段 ('trading'/'after_hours'), None=不过滤
+
+        Returns:
+            数据源名称列表,按优先级排序
+        """
+        self._migrate_legacy_config()
+
+        sources = self.config.get('data_sources', {})
+        matched = []
+
+        for name, cfg in sources.items():
+            if not cfg.get('enabled', False):
+                continue
+
+            roles = cfg.get('roles', {})
+            if role not in roles:
+                continue
+
+            role_cfg = roles[role]
+
+            # 时段过滤: 如果角色定义了 time_slot,只在匹配时段时包含
+            role_time_slot = role_cfg.get('time_slot')
+            if time_slot and role_time_slot and role_time_slot != time_slot:
+                continue
+
+            priority = role_cfg.get('priority', 999)
+            matched.append((name, priority))
+
+        matched.sort(key=lambda x: x[1])
+        return [name for name, _ in matched]
+
+    def _migrate_legacy_config(self):
+        """
+        自动迁移旧格式(use_for + priority)到新格式(roles)
+        只在 roles 字段不存在时执行迁移
+        """
+        sources = self.config.get('data_sources', {})
+        for name, cfg in sources.items():
+            if 'roles' in cfg:
+                continue  # 已有 roles,跳过
+
+            use_for = cfg.get('use_for', [])
+            priority = cfg.get('priority', 999)
+
+            # 将每个 use_for 映射为 role
+            roles = {}
+            for usage in use_for:
+                roles[usage] = {'priority': priority}
+
+            if roles:
+                cfg['roles'] = roles
+
+    def get_validation_config(self) -> dict:
+        """获取投票校验配置"""
+        defaults = {
+            'mode': 'voting',
+            'quorum': 2,
+            'strategy': 'first_to_quorum',
+            'sources': ['xtquant', 'baostock', 'mootdx'],
+            'price_tolerance_abs': 0.01,
+            'price_tolerance_pct': 0.005,
+            'volume_tolerance_pct': 0.05,
+            'min_pass_rate': 0.8,
+            'skip_today_in_trading_hours': True
+        }
+        validation_cfg = self.config.get('validation', {})
+        defaults.update(validation_cfg)
+        return defaults
+
+    def get_stock_name_config(self) -> dict:
+        """获取股票名称配置"""
+        defaults = {
+            'cache_enabled': True,
+            'cleanup_day': 5,
+            'baostock_max_consecutive_failures': 3,
+            'baostock_retry_cooldown': 300
+        }
+        sn_cfg = self.config.get('stock_name', {})
+        defaults.update(sn_cfg)
+        return defaults
+
     def is_cache_enabled(self) -> bool:
         """缓存是否启用"""
         return self.get('cache.enabled', False)

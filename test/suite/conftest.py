@@ -103,29 +103,65 @@ BASE_CONFIG = {
             "token": "test_token_for_testing",
             "use_for": ["kline_day"],
             "timeout": 10,
-            "retry_times": 2
+            "retry_times": 2,
+            "roles": {
+                "kline_day": {"priority": 1},
+                "valuation": {"priority": 1}
+            }
         },
         "mootdx": {
             "enabled": True,
             "priority": 2,
             "use_for": ["kline_day", "kline_minute"],
             "timeout": 5,
-            "retry_times": 3
+            "retry_times": 3,
+            "roles": {
+                "kline_minute": {"priority": 2},
+                "kline_day": {"priority": 2},
+                "validation": {"priority": 3}
+            }
         },
         "baostock": {
-            "enabled": False,
+            "enabled": True,
             "priority": 3,
             "use_for": ["kline_day", "valuation"],
             "timeout": 8,
-            "retry_times": 3
+            "retry_times": 3,
+            "roles": {
+                "kline_day": {"priority": 3},
+                "kline_minute": {"priority": 3},
+                "validation": {"priority": 2}
+            }
         },
         "xtquant": {
-            "enabled": False,
+            "enabled": True,
             "priority": 1,
             "use_for": ["tick"],
             "timeout": 5,
-            "retry_times": 2
+            "retry_times": 2,
+            "roles": {
+                "tick": {"priority": 1},
+                "kline_minute": {"priority": 1},
+                "validation": {"priority": 1, "time_slot": "trading"}
+            }
         }
+    },
+    "validation": {
+        "mode": "voting",
+        "quorum": 2,
+        "strategy": "first_to_quorum",
+        "sources": ["xtquant", "baostock", "mootdx"],
+        "price_tolerance_abs": 0.01,
+        "price_tolerance_pct": 0.005,
+        "volume_tolerance_pct": 0.05,
+        "min_pass_rate": 0.8,
+        "skip_today_in_trading_hours": True
+    },
+    "stock_name": {
+        "cache_enabled": True,
+        "cleanup_day": 5,
+        "baostock_max_consecutive_failures": 3,
+        "baostock_retry_cooldown": 300
     },
     "cache": {
         "enabled": True,
