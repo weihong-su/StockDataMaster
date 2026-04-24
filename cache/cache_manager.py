@@ -418,6 +418,130 @@ class CacheManager:
             self.logger.error(f"双源校验失败 {code}: {e}")
             return None
 
+    def validate_and_cache_voting(
+        self,
+        code: str,
+        primary_df: pd.DataFrame,
+        validation_dfs: Dict[str, pd.DataFrame],
+        primary_source: str
+    ) -> Optional[pd.DataFrame]:
+        """
+        三选二投票校验并缓存
+
+        Args:
+            code: 股票代码
+            primary_df: 主数据源 DataFrame
+            validation_dfs: {源名: DataFrame} 校验源字典
+            primary_source: 主数据源名称
+
+        Returns:
+            校验通过的 DataFrame
+        """
+        if primary_df is None or primary_df.empty:
+            self.logger.warning(f"{primary_source}数据为空,无法校验")
+            return None
+
+        # 无校验源时直接返回主数据(不缓存)
+        if not validation_dfs:
+            self.logger.info(f"{code}无校验源可用,返回未校验数据")
+            return primary_df
+
+        # 只有一个校验源时,降级为双源校验
+        if len(validation_dfs) == 1:
+            vs_name = list(validation_dfs.keys())[0]
+            vs_df = validation_dfs[vs_name]
+            return self.validate_and_cache(code, primary_df, vs_df, primary_source, vs_name)
+
+        # 多个校验源: 三选二投票
+        quorum = 2  # 需要2票通过
+        votes_passed = []
+
+        for vs_name, vs_df in validation_dfs.items():
+            if vs_df is None or vs_df.empty:
+                self.logger.debug(f"{vs_name}校验数据为空,跳过")
+                continue
+
+            # 使用现有的比对逻辑计算通过率
+            pass_rate = self._calculate_pass_rate(primary_df, vs_df, code)
+
+            if pass_rate >= 0.8:
+                votes_passed.append(vs_name)
+                self.logger.debug(f"{code} {vs_name}校验通过(通过率={pass_rate*100:.1f}%)")
+
+                if len(votes_passed) >= quorum:
+                    # 达到法定票数,使用主数据缓存
+                    validated_df = primary_df.copy()
+                    self.save_to_cache(
+                        code, validated_df, primary_source,
+                        ','.join(votes_passed[:quorum]),
+                        validated=True
+                    )
+                    self.logger.info(
+                        f"{code}投票校验通过: {votes_passed[:quorum]} "
+                        f"({len(validated_df)}条)"
+                    )
+                    return validated_df
+            else:
+                self.logger.debug(f"{code} {vs_name}校验未通过(通过率={pass_rate*100:.1f}%)")
+
+        # 未达到法定票数
+        self.logger.warning(
+            f"{code}投票校验未达标: {len(votes_passed)}/{quorum}票 "
+            f"(通过源: {votes_passed})"
+        )
+        return None
+
+    def _calculate_pass_rate(
+        self,
+        df1: pd.DataFrame,
+        df2: pd.DataFrame,
+        code: str
+    ) -> float:
+        """
+        计算两个数据源的比对通过率
+
+        Returns:
+            通过率 (0.0-1.0)
+        """
+        try:
+            df1_clean = df1[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
+            df2_temp = df2[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
+            df2_clean = df2_temp.loc[:, ~df2_temp.columns.duplicated()]
+
+            merged = pd.merge(df1_clean, df2_clean, on='date', suffixes=('_1', '_2'), how='inner')
+
+            if merged.empty:
+                return 0.0
+
+            passed = 0
+            for _, row in merged.iterrows():
+                price_valid = True
+                for field in ['open', 'high', 'low', 'close']:
+                    p1 = float(row[f'{field}_1'])
+                    p2 = float(row[f'{field}_2'])
+                    abs_diff = abs(p1 - p2)
+                    pct_diff = abs_diff / max(p1, p2) if max(p1, p2) > 0 else 0
+                    if abs_diff > self.price_tolerance_abs and pct_diff > self.price_tolerance_pct:
+                        price_valid = False
+                        break
+
+                if not price_valid:
+                    continue
+
+                v1 = float(row['volume_1'])
+                v2 = float(row['volume_2'])
+                vol_diff = abs(v1 - v2) / max(v1, v2) if max(v1, v2) > 0 else 0
+                if vol_diff > self.volume_tolerance_pct:
+                    continue
+
+                passed += 1
+
+            return passed / len(merged) if len(merged) > 0 else 0.0
+
+        except Exception as e:
+            self.logger.error(f"计算通过率失败 {code}: {e}")
+            return 0.0
+
     def cleanup_old_cache(self, days: Optional[int] = None):
         """
         清理超过指定天数的旧缓存

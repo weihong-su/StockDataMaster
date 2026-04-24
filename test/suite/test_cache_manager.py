@@ -279,3 +279,103 @@ def test_historical_data_can_be_cached(temp_cache_config):
     assert cm.save_to_cache("600530", df, "tushare", None, validated=True)
     cached = cm.get_cached_kline("600530")
     assert cached is not None
+
+
+# ─── 测试：三选二投票校验 ──────────────────────────────────────────────────────
+
+class TestVotingValidation:
+    """三选二投票校验测试"""
+
+    def test_two_sources_agree_passes(self, temp_cache_config):
+        """两个校验源一致 -> 通过"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        # 主数据 (tushare)
+        df1 = make_sample_df(5, start_days_ago=10)
+        # 校验数据1 (与主数据一致)
+        df2 = make_sample_df(5, start_days_ago=10)
+        # 校验数据2 (与主数据一致)
+        df3 = make_sample_df(5, start_days_ago=10)
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={'baostock': df2, 'mootdx': df3},
+            primary_source='tushare'
+        )
+        assert result is not None
+        assert len(result) == 5
+
+    def test_two_sources_disagree_fails(self, temp_cache_config):
+        """两个校验源都不一致 -> 失败"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        df1 = make_sample_df(5, start_days_ago=10)
+        # 构造完全不同的数据
+        df2 = make_sample_df(5, start_days_ago=10)
+        df2['close'] = df2['close'] * 10  # 巨大差异
+        df3 = make_sample_df(5, start_days_ago=10)
+        df3['close'] = df3['close'] * 20  # 巨大差异
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={'baostock': df2, 'mootdx': df3},
+            primary_source='tushare'
+        )
+        assert result is None
+
+    def test_one_agree_one_disagree_passes(self, temp_cache_config):
+        """一个一致一个不一致 -> 一票通过，但需要二票，所以失败"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        df1 = make_sample_df(5, start_days_ago=10)
+        # 一致
+        df2 = make_sample_df(5, start_days_ago=10)
+        # 不一致
+        df3 = make_sample_df(5, start_days_ago=10)
+        df3['close'] = df3['close'] * 10
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={'baostock': df2, 'mootdx': df3},
+            primary_source='tushare'
+        )
+        # 只有一个源通过，不足二票，应该失败
+        assert result is None
+
+    def test_single_validation_source_passes(self, temp_cache_config):
+        """只有一个校验源且一致 -> 通过(降级为二选一)"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        df1 = make_sample_df(5, start_days_ago=10)
+        df2 = make_sample_df(5, start_days_ago=10)
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={'baostock': df2},
+            primary_source='tushare'
+        )
+        assert result is not None
+
+    def test_no_validation_sources_returns_unvalidated(self, temp_cache_config):
+        """无校验源 -> 返回主数据(不缓存)"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        df1 = make_sample_df(5, start_days_ago=10)
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={},
+            primary_source='tushare'
+        )
+        assert result is not None
+        assert len(result) == 5
