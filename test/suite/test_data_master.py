@@ -416,3 +416,207 @@ def test_try_cache_kline_voting_single_source(dm_with_mocks):
             # 验证只有一个校验源
             validation_dfs = call_args[1]['validation_dfs']
             assert len(validation_dfs) == 1, "应该只有1个校验源"
+
+
+# ─── 测试：get_stock_name 三级查找 ────────────────────────────────────────────
+
+class TestGetStockName:
+    """get_stock_name 三级查找测试"""
+
+    def test_l1_memory_cache_hit(self, dm_with_mocks):
+        """L1 内存缓存命中"""
+        dm, _, _ = dm_with_mocks
+        # 预填充内存缓存
+        dm._stock_name_cache['600519'] = '贵州茅台'
+
+        # 调用 get_stock_name 应直接返回缓存值
+        result = dm.get_stock_name('600519')
+        assert result == '贵州茅台'
+
+        # 测试不同格式都能命中缓存
+        result = dm.get_stock_name('sh.600519')
+        assert result == '贵州茅台'
+
+        result = dm.get_stock_name('600519.SH')
+        assert result == '贵州茅台'
+
+    def test_l2_xtquant_lookup(self, dm_with_mocks):
+        """L2 xtquant 查找成功"""
+        dm, _, _ = dm_with_mocks
+
+        # Mock xtquant adapter
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = True
+        mock_xtquant.get_stock_name.return_value = '平安银行'
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # 调用 get_stock_name
+        result = dm.get_stock_name('000001')
+
+        # 验证返回值
+        assert result == '平安银行'
+
+        # 验证缓存写入
+        assert dm._stock_name_cache.get('000001') == '平安银行'
+
+        # 验证调用了 xtquant
+        mock_xtquant.get_stock_name.assert_called_once()
+
+    def test_l3_baostock_fallback(self, dm_with_mocks):
+        """L3 baostock 兜底查找"""
+        dm, _, _ = dm_with_mocks
+
+        # Mock xtquant 不可用
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = False
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # Mock baostock adapter (确保 adapters 里有)
+        mock_baostock = MagicMock()
+        dm.adapters['baostock'] = mock_baostock
+
+        # Mock baostock 模块
+        mock_bs = MagicMock()
+        mock_login_result = MagicMock()
+        mock_login_result.error_code = '0'
+        mock_bs.login.return_value = mock_login_result
+
+        mock_rs = MagicMock()
+        mock_rs.error_code = '0'
+        mock_rs.next.side_effect = [True, False]
+        mock_rs.get_row_data.return_value = ['sh.600519', '贵州茅台', 'other', 'fields']
+        mock_bs.query_stock_basic.return_value = mock_rs
+
+        with patch.dict('sys.modules', {'baostock': mock_bs}):
+            result = dm.get_stock_name('600519')
+
+            # 验证返回值
+            assert result == '贵州茅台'
+
+            # 验证缓存写入
+            assert dm._stock_name_cache.get('600519') == '贵州茅台'
+
+    def test_all_fail_returns_code(self, dm_with_mocks):
+        """所有级别失败返回代码本身"""
+        dm, _, _ = dm_with_mocks
+
+        # Mock xtquant 不可用
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = False
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # Mock baostock 模块（查询失败）
+        mock_bs = MagicMock()
+        mock_login_result = MagicMock()
+        mock_login_result.error_code = '0'
+        mock_bs.login.return_value = mock_login_result
+
+        mock_rs = MagicMock()
+        mock_rs.error_code = '1'  # 错误码
+        mock_bs.query_stock_basic.return_value = mock_rs
+
+        with patch.dict('sys.modules', {'baostock': mock_bs}):
+            result = dm.get_stock_name('600519')
+
+            # 应返回代码本身
+            assert result == '600519'
+
+    def test_code_format_normalization(self, dm_with_mocks):
+        """代码格式标准化"""
+        dm, _, _ = dm_with_mocks
+
+        # 预填充缓存
+        dm._stock_name_cache['600519'] = '贵州茅台'
+
+        # 测试各种格式都能正确处理
+        assert dm.get_stock_name('600519') == '贵州茅台'
+        assert dm.get_stock_name('sh.600519') == '贵州茅台'
+        assert dm.get_stock_name('600519.SH') == '贵州茅台'
+        assert dm.get_stock_name('SH.600519') == '贵州茅台'  # 大写前缀
+
+    def test_baostock_cooldown(self, dm_with_mocks):
+        """baostock 冷却机制"""
+        dm, _, _ = dm_with_mocks
+
+        # Mock xtquant 不可用
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = False
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # Mock baostock adapter
+        mock_baostock = MagicMock()
+        dm.adapters['baostock'] = mock_baostock
+
+        # Mock baostock 模块（连续失败）
+        mock_bs = MagicMock()
+        mock_login_result = MagicMock()
+        mock_login_result.error_code = '0'
+        mock_bs.login.return_value = mock_login_result
+
+        mock_rs = MagicMock()
+        mock_rs.error_code = '1'  # 失败
+        mock_bs.query_stock_basic.return_value = mock_rs
+
+        with patch.dict('sys.modules', {'baostock': mock_bs}):
+            # 连续失败 3 次
+            for i in range(3):
+                result = dm.get_stock_name(f'60051{i}')
+                assert result == f'60051{i}'  # 返回代码本身
+
+            # 验证失败计数
+            assert dm._baostock_consecutive_failures == 3
+
+            # 验证进入冷却期
+            import time
+            assert dm._baostock_cooldown_until > time.time()
+
+            # 记录当前 query_stock_basic 调用次数
+            call_count_before = mock_bs.query_stock_basic.call_count
+
+            # 冷却期内再次调用，应跳过 baostock
+            result = dm.get_stock_name('600519')
+            assert result == '600519'
+
+            # 验证 baostock 没有被调用（因为在冷却期）
+            assert mock_bs.query_stock_basic.call_count == call_count_before
+
+    def test_baostock_cooldown_reset_on_success(self, dm_with_mocks):
+        """baostock 成功后重置失败计数"""
+        dm, _, _ = dm_with_mocks
+
+        # Mock xtquant 不可用
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = False
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # Mock baostock adapter
+        mock_baostock = MagicMock()
+        dm.adapters['baostock'] = mock_baostock
+
+        # 先失败 2 次
+        mock_bs = MagicMock()
+        mock_login_result = MagicMock()
+        mock_login_result.error_code = '0'
+        mock_bs.login.return_value = mock_login_result
+
+        mock_rs_fail = MagicMock()
+        mock_rs_fail.error_code = '1'
+        mock_bs.query_stock_basic.return_value = mock_rs_fail
+
+        with patch.dict('sys.modules', {'baostock': mock_bs}):
+            dm.get_stock_name('600510')
+            dm.get_stock_name('600511')
+            assert dm._baostock_consecutive_failures == 2
+
+            # 第 3 次成功
+            mock_rs_success = MagicMock()
+            mock_rs_success.error_code = '0'
+            mock_rs_success.next.side_effect = [True, False]
+            mock_rs_success.get_row_data.return_value = ['sh.600519', '贵州茅台']
+            mock_bs.query_stock_basic.return_value = mock_rs_success
+
+            result = dm.get_stock_name('600519')
+            assert result == '贵州茅台'
+
+            # 验证失败计数被重置
+            assert dm._baostock_consecutive_failures == 0

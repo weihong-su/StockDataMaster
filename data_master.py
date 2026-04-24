@@ -63,6 +63,10 @@ class StockDataMaster:
         self._bs_session_active = False
         self._bs_last_login_time = None
 
+        # 🔥 baostock 冷却机制
+        self._baostock_consecutive_failures = 0
+        self._baostock_cooldown_until = 0  # time.time() 时间戳
+
         # 启动健康监控
         if self.config.is_health_check_enabled():
             self.health_manager.start_monitoring()
@@ -755,10 +759,175 @@ class StockDataMaster:
         return 'after_hours'
 
     def _normalize_code(self, code: str) -> str:
-        """标准化股票代码"""
-        if code.startswith(('sh.', 'sz.')):
-            return code.split('.')[1]
+        """标准化股票代码为6位纯数字格式"""
+        if not code:
+            return code
+
+        # 去除前缀 'sh.', 'sz.' (大小写不敏感)
+        code_lower = code.lower()
+        if code_lower.startswith(('sh.', 'sz.')):
+            code = code.split('.')[1]
+
+        # 去除后缀 '.SH', '.SZ' (大小写不敏感)
+        if '.' in code:
+            code = code.split('.')[0]
+
         return code
+
+    def _to_baostock_code(self, code: str) -> str:
+        """
+        转换为 baostock 格式
+
+        Args:
+            code: 6位纯数字代码
+
+        Returns:
+            baostock 格式代码 (sh.600519 或 sz.000001)
+        """
+        pure = self._normalize_code(code)
+
+        # 上海: 6开头 或 50x/51x/518 (ETF/债券)
+        if pure.startswith(('6', '510', '511', '518')):
+            return f"sh.{pure}"
+
+        # 深圳: 其他
+        return f"sz.{pure}"
+
+    def _get_stock_name_from_xtquant(self, code: str) -> Optional[str]:
+        """
+        从 xtquant 获取股票名称 (L2)
+
+        Args:
+            code: 6位纯数字代码
+
+        Returns:
+            股票名称，失败返回 None
+        """
+        adapter = self.adapters.get('xtquant')
+        if not adapter or not adapter.is_connected:
+            return None
+
+        try:
+            return adapter.get_stock_name(code)
+        except Exception as e:
+            self.logger.debug(f"xtquant获取股票名称失败: {code} {e}")
+            return None
+
+    def _get_stock_name_from_baostock(self, code: str) -> Optional[str]:
+        """
+        从 baostock 获取股票名称 (L3)
+
+        Args:
+            code: 6位纯数字代码
+
+        Returns:
+            股票名称，失败返回 None
+        """
+        import time
+
+        # 检查冷却期
+        if time.time() < self._baostock_cooldown_until:
+            self.logger.debug(f"baostock在冷却期，跳过查询: {code}")
+            return None
+
+        bs_code = self._to_baostock_code(code)
+        adapter = self.adapters.get('baostock')
+        if not adapter:
+            return None
+
+        try:
+            import baostock as bs
+
+            # 确保登录
+            if not self._bs_session_active:
+                rs = bs.login()
+                if rs.error_code == '0':
+                    self._bs_session_active = True
+                else:
+                    self.logger.debug(f"baostock登录失败: {rs.error_msg}")
+                    self._baostock_consecutive_failures += 1
+                    self._check_baostock_cooldown()
+                    return None
+
+            # 查询股票基本信息
+            rs = bs.query_stock_basic(code=bs_code)
+
+            if rs.error_code == '0':
+                while rs.next():
+                    row = rs.get_row_data()
+                    if len(row) > 1:
+                        name = row[1]  # 第二列是股票名称
+                        self._baostock_consecutive_failures = 0  # 重置失败计数
+                        self.logger.debug(f"baostock获取股票名称成功: {code} -> {name}")
+                        return name
+            else:
+                self.logger.debug(f"baostock查询失败: {code} {rs.error_msg}")
+
+        except Exception as e:
+            self.logger.debug(f"baostock获取股票名称异常: {code} {e}")
+
+        # 失败处理
+        self._baostock_consecutive_failures += 1
+        self._check_baostock_cooldown()
+        return None
+
+    def _check_baostock_cooldown(self):
+        """检查并设置 baostock 冷却期"""
+        import time
+
+        config = self.config.get_stock_name_config()
+        max_failures = config.get('baostock_max_consecutive_failures', 3)
+        cooldown = config.get('baostock_retry_cooldown', 300)
+
+        if self._baostock_consecutive_failures >= max_failures:
+            self._baostock_cooldown_until = time.time() + cooldown
+            self.logger.warning(
+                f"baostock连续失败{self._baostock_consecutive_failures}次，"
+                f"进入冷却期{cooldown}秒"
+            )
+
+    def get_stock_name(self, code: str) -> str:
+        """
+        获取股票名称 - 三级查找链
+
+        L1: 内存缓存 dict
+        L2: xtquant.get_stock_name()
+        L3: baostock query_stock_basic()
+
+        Args:
+            code: 股票代码，支持 '600519', 'sh.600519', '600519.SH' 格式
+
+        Returns:
+            股票名称字符串，所有级别都失败时返回代码本身
+        """
+        if not code:
+            return code
+
+        # 标准化为6位纯数字
+        pure_code = self._normalize_code(code)
+
+        # L1: 内存缓存
+        if pure_code in self._stock_name_cache:
+            self.logger.debug(f"L1缓存命中: {pure_code} -> {self._stock_name_cache[pure_code]}")
+            return self._stock_name_cache[pure_code]
+
+        # L2: xtquant
+        name = self._get_stock_name_from_xtquant(pure_code)
+        if name:
+            self._stock_name_cache[pure_code] = name
+            self.logger.info(f"L2 xtquant获取股票名称: {pure_code} -> {name}")
+            return name
+
+        # L3: baostock
+        name = self._get_stock_name_from_baostock(pure_code)
+        if name:
+            self._stock_name_cache[pure_code] = name
+            self.logger.info(f"L3 baostock获取股票名称: {pure_code} -> {name}")
+            return name
+
+        # 所有级别失败，返回代码本身
+        self.logger.warning(f"所有级别查找失败，返回代码本身: {pure_code}")
+        return pure_code
 
     def close(self):
         """关闭DataMaster,清理资源"""
