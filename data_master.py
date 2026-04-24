@@ -204,25 +204,24 @@ class StockDataMaster:
         adjust: str
     ) -> Optional[pd.DataFrame]:
         """
-        从数据源获取K线数据(带故障切换)
-
-        Returns:
-            DataFrame
+        从数据源获取K线数据(带故障切换,时段感知)
         """
-        # 根据频率类型选择数据源
-        # 'd','w','m' = 日K线, 其他 = 分钟K线
+        # 根据频率类型选择角色
         if freq in ['d', 'w', 'm']:
-            usage_type = 'kline_day'
+            role = 'kline_day'
         else:
-            usage_type = 'kline_minute'
+            role = 'kline_minute'
 
-        # 获取备用数据源列表(按优先级)
-        sources = self.config.get_sources_by_usage(usage_type)
+        # 获取当前时段
+        time_slot = self._get_time_slot()
+
+        # 优先从 roles 获取数据源列表
+        sources = self.config.get_sources_by_role(role, time_slot=time_slot)
 
         if not sources:
-            # 如果没有找到特定类型的数据源,回退到通用kline
-            self.logger.warning(f"未找到{usage_type}数据源,回退到通用kline源")
-            sources = self.config.get_sources_by_usage('kline')
+            # fallback 到旧的 use_for 格式
+            self.logger.warning(f"roles中未找到{role}数据源,回退到use_for格式")
+            sources = self.config.get_sources_by_usage(role)
 
         if not sources:
             self.logger.error("没有可用的K线数据源")
@@ -231,38 +230,29 @@ class StockDataMaster:
         # 依次尝试数据源
         for source_name in sources:
             adapter = self.adapters.get(source_name)
-
             if not adapter:
                 continue
 
             try:
-                # 缓存预取优化:为提高缓存命中率,实际请求时多获取10%的数据
-                # 例如用户请求120条,实际获取132条,多余的数据可供后续缓存使用
                 actual_count = count
                 if count is not None and freq == 'd':
                     actual_count = int(count * 1.1)
-                    self.logger.debug(f"缓存预取优化: 用户请求{count}条,实际获取{actual_count}条(+10%)")
 
-                self.logger.debug(f"从{source_name}获取{code} K线数据")
+                self.logger.debug(f"从{source_name}获取{code} K线数据(role={role}, slot={time_slot})")
 
                 df = adapter.get_kline(code, freq, start_date, end_date, actual_count, adjust)
 
                 if df is not None and not df.empty:
-                    # 设置数据来源属性
                     df.attrs['source'] = source_name
 
-                    # 如果多获取了数据,截取用户实际需要的数量返回
-                    # 但完整数据保存在attrs中,供_try_cache_kline使用
                     if count is not None and len(df) > count:
-                        self.logger.debug(f"获取{len(df)}条数据,截取最新{count}条返回,多余{len(df)-count}条将缓存供后续使用")
                         return_df = df.tail(count).copy()
                         return_df.attrs['source'] = source_name
-                        # 将完整数据保存在attrs中,供缓存使用
                         return_df.attrs['full_data'] = df
                     else:
                         return_df = df
 
-                    self.logger.debug(f"成功从{source_name}获取{code}数据: 返回{len(return_df)}条")
+                    self.logger.debug(f"成功从{source_name}获取{code}数据: {len(return_df)}条")
                     return return_df
                 else:
                     self.logger.warning(f"{source_name}返回空数据")
@@ -738,6 +728,28 @@ class StockDataMaster:
             是否成功
         """
         return self.health_manager.force_switch(usage, target_source)
+
+    def _get_time_slot(self, current_time=None) -> str:
+        """
+        判断当前时段
+
+        Args:
+            current_time: datetime.time 对象,用于测试注入。None则使用当前时间
+
+        Returns:
+            'trading' 或 'after_hours'
+        """
+        from datetime import time as time_type
+
+        if current_time is None:
+            current_time = datetime.now().time()
+
+        market_start = time_type(9, 15)
+        market_end = time_type(15, 0)
+
+        if market_start <= current_time <= market_end:
+            return 'trading'
+        return 'after_hours'
 
     def _normalize_code(self, code: str) -> str:
         """标准化股票代码"""

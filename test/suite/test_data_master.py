@@ -242,3 +242,63 @@ def test_singleton_behavior(tmp_path):
 
     os.unlink(tmp_cfg.name)
     assert dm1 is dm2, "单例模式应返回同一实例"
+
+
+# ─── 测试：时段判断 ────────────────────────────────────────────────────────────
+
+class TestTimeSlot:
+    """时段判断测试"""
+
+    def test_trading_hours_morning(self):
+        """09:15-15:00 为交易时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(10, 0)
+        assert dm._get_time_slot(test_time) == 'trading'
+
+    def test_after_hours_evening(self):
+        """16:00 为盘后时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(16, 0)
+        assert dm._get_time_slot(test_time) == 'after_hours'
+
+    def test_after_hours_before_market(self):
+        """08:00 为盘后时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(8, 0)
+        assert dm._get_time_slot(test_time) == 'after_hours'
+
+    def test_boundary_915(self):
+        """09:15 恰好为交易时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(9, 15)
+        assert dm._get_time_slot(test_time) == 'trading'
+
+    def test_boundary_1500(self):
+        """15:00 恰好为交易时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(15, 0)
+        assert dm._get_time_slot(test_time) == 'trading'
+
+    def test_boundary_1501(self):
+        """15:01 为盘后时段"""
+        from StockDataMaster.data_master import StockDataMaster
+        dm = StockDataMaster.__new__(StockDataMaster)
+        dm._initialized = False
+        from datetime import time as time_type
+        test_time = time_type(15, 1)
+        assert dm._get_time_slot(test_time) == 'after_hours'
