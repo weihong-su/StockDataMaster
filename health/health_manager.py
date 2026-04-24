@@ -165,7 +165,7 @@ class HealthManager:
 
         # 检查xtquant的用途
         xtquant_adapter = self.adapters['xtquant']
-        xtquant_uses = xtquant_adapter.config.get('use_for', [])
+        xtquant_uses = self._get_adapter_uses(xtquant_adapter)
 
         # 尝试恢复每个用途
         for usage in xtquant_uses:
@@ -222,7 +222,7 @@ class HealthManager:
         if not failed_adapter:
             return
 
-        failed_uses = failed_adapter.config.get('use_for', [])
+        failed_uses = self._get_adapter_uses(failed_adapter)
 
         # 对每个用途尝试切换
         for usage in failed_uses:
@@ -272,19 +272,60 @@ class HealthManager:
             if not adapter.config.get('enabled', False):
                 continue
 
-            if usage not in adapter.config.get('use_for', []):
-                continue
+            # 优先使用 roles 格式，回退到 use_for 格式（向后兼容）
+            roles = adapter.config.get('roles', {})
+            if roles:
+                # 使用 roles 格式
+                if usage not in roles:
+                    continue
+
+                role_config = roles[usage]
+                priority = role_config.get('priority', 999)
+
+                # 检查时段约束
+                time_slot = role_config.get('time_slot')
+                if time_slot:
+                    from datetime import time as time_type
+                    current_time = datetime.now().time()
+                    market_start = time_type(9, 15)
+                    market_end = time_type(15, 0)
+                    is_trading = market_start <= current_time <= market_end
+
+                    if time_slot == 'trading' and not is_trading:
+                        # 非交易时段，跳过 trading-only 源
+                        continue
+            else:
+                # 回退到 use_for 格式（向后兼容）
+                if usage not in adapter.config.get('use_for', []):
+                    continue
+                priority = adapter.config.get('priority', 999)
 
             # 检查健康状态
             health = self.health_status.get(name, {})
             if health.get('status') == 'ok':
-                priority = adapter.config.get('priority', 999)
                 candidates.append((name, priority))
 
         # 按优先级排序
         candidates.sort(key=lambda x: x[1])
 
         return candidates[0][0] if candidates else None
+
+    def _get_adapter_uses(self, adapter) -> List[str]:
+        """
+        获取适配器支持的用途列表
+
+        优先使用 roles 格式，回退到 use_for 格式（向后兼容）
+
+        Args:
+            adapter: 数据源适配器
+
+        Returns:
+            用途列表
+        """
+        roles = adapter.config.get('roles', {})
+        if roles:
+            return list(roles.keys())
+        return adapter.config.get('use_for', [])
 
     def get_active_source(self, usage: str) -> Optional[str]:
         """
@@ -404,9 +445,16 @@ class HealthManager:
 
             adapter = self.adapters[target_source]
 
-            if usage not in adapter.config.get('use_for', []):
-                self.logger.error(f"{target_source}不支持{usage}用途")
-                return False
+            # 优先使用 roles 格式，回退到 use_for 格式（向后兼容）
+            roles = adapter.config.get('roles', {})
+            if roles:
+                if usage not in roles:
+                    self.logger.error(f"{target_source}不支持{usage}用途")
+                    return False
+            else:
+                if usage not in adapter.config.get('use_for', []):
+                    self.logger.error(f"{target_source}不支持{usage}用途")
+                    return False
 
             old_source = self.active_sources.get(usage)
             self.active_sources[usage] = target_source
