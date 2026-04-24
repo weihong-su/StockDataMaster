@@ -10,7 +10,7 @@ import subprocess
 import shutil
 
 
-def install_builtin_libs():
+def install_builtin_libs(auto_confirm=False):
     """安装内置依赖库到lib目录"""
 
     # 获取当前脚本所在目录(即lib目录)
@@ -41,10 +41,14 @@ def install_builtin_libs():
     print("")
 
     # 确认安装
-    confirm = input("是否继续? (y/n): ")
-    if confirm.lower() != 'y':
-        print("取消安装")
-        return
+    if not auto_confirm:
+        try:
+            confirm = input("是否继续? (y/n): ")
+        except EOFError:
+            confirm = ''
+        if confirm.lower() != 'y':
+            print("取消安装")
+            return
 
     print("\n开始安装...\n")
 
@@ -186,7 +190,9 @@ def uninstall_builtin_libs():
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == 'uninstall':
+    args = sys.argv[1:]
+    if 'uninstall' in args:
         uninstall_builtin_libs()
     else:
-        install_builtin_libs()
+        auto_confirm = any(a in ('-y', '--yes', '-Y') for a in args)
+        install_builtin_libs(auto_confirm=auto_confirm)
