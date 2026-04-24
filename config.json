@@ -8,25 +8,11 @@
       "retry_times": 2,
       "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
       "use_for": ["kline_day"],
-      "comment": "日K线主数据源,复权数据准确"
-    },
-    "mootdx": {
-      "enabled": true,
-      "priority": 2,
-      "timeout": 5,
-      "retry_times": 3,
-      "use_for": ["kline_day", "kline_minute"],
-      "adjustflag": "qfq",
-      "comment": "日K线备用+分钟K线主数据源,复权数据有BUG但分钟线可用"
-    },
-    "baostock": {
-      "enabled": true,
-      "priority": 3,
-      "timeout": 8,
-      "retry_times": 3,
-      "use_for": ["kline_day", "kline_minute", "valuation"],
-      "adjustflag": "2",
-      "comment": "日K线和分钟K线备用数据源"
+      "roles": {
+        "kline_day": { "priority": 1 },
+        "valuation": { "priority": 1 }
+      },
+      "comment": "日K线主数据源(pro账号),复权数据准确"
     },
     "xtquant": {
       "enabled": true,
@@ -50,8 +36,58 @@
       "max_reconnect_attempts": 5,
       "cache_enabled": true,
       "cache_only_daily": true,
-      "comment": "实时Tick主数据源(需QMT客户端运行) - 增强版:支持心跳保活和智能重试"
+      "roles": {
+        "tick": { "priority": 1 },
+        "kline_minute": { "priority": 1 },
+        "validation": { "priority": 1, "time_slot": "trading" }
+      },
+      "comment": "实时Tick主数据源(需QMT客户端运行),分钟线主源,盘中校验源"
+    },
+    "mootdx": {
+      "enabled": true,
+      "priority": 2,
+      "timeout": 5,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute"],
+      "adjustflag": "qfq",
+      "roles": {
+        "kline_minute": { "priority": 2 },
+        "kline_day": { "priority": 2 },
+        "validation": { "priority": 3 }
+      },
+      "comment": "日K线备用+分钟K线备用数据源"
+    },
+    "baostock": {
+      "enabled": true,
+      "priority": 3,
+      "timeout": 8,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute", "valuation"],
+      "adjustflag": "2",
+      "roles": {
+        "kline_day": { "priority": 3 },
+        "kline_minute": { "priority": 3 },
+        "validation": { "priority": 2 }
+      },
+      "comment": "日K线/分钟K线备用数据源,校验源"
     }
+  },
+  "validation": {
+    "mode": "voting",
+    "quorum": 2,
+    "strategy": "first_to_quorum",
+    "sources": ["xtquant", "baostock", "mootdx"],
+    "price_tolerance_abs": 0.01,
+    "price_tolerance_pct": 0.005,
+    "volume_tolerance_pct": 0.05,
+    "min_pass_rate": 0.8,
+    "skip_today_in_trading_hours": true
+  },
+  "stock_name": {
+    "cache_enabled": true,
+    "cleanup_day": 5,
+    "baostock_max_consecutive_failures": 3,
+    "baostock_retry_cooldown": 300
   },
   "cache": {
     "enabled": true,
