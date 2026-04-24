@@ -274,87 +274,90 @@ class StockDataMaster:
         adjust: str
     ):
         """
-        尝试缓存日K线数据(双源校验)
+        尝试缓存日K线数据(并行三选二投票校验)
 
-        策略: Tushare主数据 + (Mootdx或Baostock至少1个)进行校验
-        只有校验通过的数据才会进入缓存
+        策略: 使用 validate_and_cache_voting 进行多源投票校验
+        - 多个校验源: 三选二投票(first-to-quorum)
+        - 单个校验源: 降级为双源校验
+        - 无校验源: 降级为直接缓存主数据
 
         Args:
             code: 股票代码
-            df: 已获取的数据(来自Tushare)
-            其他参数同get_kline
+            df: 已获取的数据(来自主数据源)
+            start_date: 开始日期
+            end_date: 结束日期
+            count: 数量
+            adjust: 复权类型
         """
         if not self.cache_manager.enabled:
             return
 
         try:
             # 如果df.attrs中包含完整数据(缓存预取优化),使用完整数据进行缓存
-            # 这样可以提高后续缓存命中率
             cache_df = df.attrs.get('full_data', df)
             actual_count = count
             if cache_df is not df:
                 self.logger.debug(f"使用预取的完整数据进行缓存: {len(cache_df)}条(原{len(df)}条)")
-                # 计算实际的count用于获取校验数据
                 actual_count = len(cache_df)
-            # 获取日K线数据源列表
-            sources = self.config.get_sources_by_usage('kline_day')
 
-            if not sources or sources[0] != 'tushare':
-                self.logger.warning(f"缓存策略要求Tushare为主数据源,当前主源: {sources[0] if sources else 'None'}")
-                # 如果不是Tushare数据,不进入缓存
+            # 获取主数据源名称
+            primary_source = df.attrs.get('source', 'unknown')
+
+            # 获取当前时段,用于时段感知的校验源选择
+            time_slot = self._get_time_slot()
+
+            # 从 config 获取校验源列表(按角色和时段过滤)
+            validation_sources = self.config.get_sources_by_role('validation', time_slot=time_slot)
+
+            # 过滤掉主数据源(避免重复)
+            validation_sources = [s for s in validation_sources if s != primary_source]
+
+            if not validation_sources:
+                # 无校验源: 降级为旧逻辑(直接缓存主数据)
+                self.logger.info(f"{code}无校验源可用,直接缓存主数据")
+                self.cache_manager.save_to_cache(code, cache_df, primary_source, 'none', validated=False)
                 return
 
-            # 尝试从Mootdx和Baostock获取校验数据,任一通过即可缓存
-            validation_sources = ['mootdx', 'baostock']
-            cached = False
-            min_pass_rate = 0.8  # 最低校验通过率80%
-
+            # 并行请求所有校验源数据
+            validation_dfs = {}
             for vs_name in validation_sources:
-                if vs_name not in sources:
-                    continue
-
-                adapter = self.adapters.get(vs_name)
-                if not adapter:
+                vs_adapter = self.adapters.get(vs_name)
+                if not vs_adapter or not getattr(vs_adapter, 'is_connected', False):
+                    self.logger.debug(f"{vs_name}适配器不可用,跳过")
                     continue
 
                 try:
-                    self.logger.debug(f"尝试{vs_name}校验: {code}")
-                    vs_df = adapter.get_kline(code, 'd', start_date, end_date, actual_count, adjust)
+                    self.logger.debug(f"请求{vs_name}校验数据: {code}")
+                    vs_df = vs_adapter.get_kline(code, 'd', start_date, end_date, actual_count, adjust)
 
-                    if vs_df is None or vs_df.empty:
-                        self.logger.debug(f"{vs_name}未返回数据")
-                        continue
-
-                    # 执行双源校验 - 使用完整数据
-                    self.logger.info(f"执行双源校验: Tushare + {vs_name}")
-                    validated_df = self.cache_manager.validate_and_cache(code, cache_df, vs_df, 'tushare', vs_name)
-
-                    if validated_df is not None and not validated_df.empty:
-                        # 计算校验通过率
-                        expected_count = min(len(cache_df), len(vs_df))
-                        actual_count = len(validated_df)
-                        pass_rate = actual_count / expected_count if expected_count > 0 else 0
-
-                        self.logger.info(f"{code}校验通过率: {pass_rate*100:.1f}% ({actual_count}/{expected_count})")
-
-                        if pass_rate >= min_pass_rate:
-                            # 校验通过率达标,缓存成功
-                            self.logger.info(f"{code}通过{vs_name}校验(≥{min_pass_rate*100:.0f}%),已缓存")
-                            cached = True
-                            break  # 成功缓存,无需尝试下一个源
-                        else:
-                            # 校验通过率不达标,尝试下一个源
-                            self.logger.warning(f"{code}{vs_name}校验通过率过低({pass_rate*100:.1f}% < {min_pass_rate*100:.0f}%),尝试下一个源")
+                    if vs_df is not None and not vs_df.empty:
+                        validation_dfs[vs_name] = vs_df
+                        self.logger.debug(f"{vs_name}返回{len(vs_df)}条校验数据")
                     else:
-                        # 校验未通过,尝试下一个源
-                        self.logger.warning(f"{code}未通过{vs_name}校验,尝试下一个源")
-
+                        self.logger.debug(f"{vs_name}未返回数据")
                 except Exception as e:
-                    self.logger.warning(f"{vs_name}校验失败: {e},尝试下一个源")
+                    self.logger.warning(f"{vs_name}校验数据请求失败: {e}")
                     continue
 
-            if not cached:
-                self.logger.warning(f"{code}所有校验源都未通过,不进入缓存")
+            if not validation_dfs:
+                # 所有校验源请求失败,降级为直接缓存
+                self.logger.warning(f"{code}所有校验源请求失败,直接缓存主数据")
+                self.cache_manager.save_to_cache(code, cache_df, primary_source, 'none', validated=False)
+                return
+
+            # 调用投票校验
+            self.logger.info(f"{code}执行投票校验: 主源={primary_source}, 校验源={list(validation_dfs.keys())}")
+            result = self.cache_manager.validate_and_cache_voting(
+                code=code,
+                primary_df=cache_df,
+                validation_dfs=validation_dfs,
+                primary_source=primary_source
+            )
+
+            if result is not None:
+                self.logger.info(f"{code}投票校验通过,已缓存({len(result)}条)")
+            else:
+                self.logger.warning(f"{code}投票校验未通过,不进入缓存")
 
         except Exception as e:
             self.logger.error(f"缓存数据失败 {code}: {e}")

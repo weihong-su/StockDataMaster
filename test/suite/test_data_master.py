@@ -302,3 +302,117 @@ class TestTimeSlot:
         from datetime import time as time_type
         test_time = time_type(15, 1)
         assert dm._get_time_slot(test_time) == 'after_hours'
+
+
+# ─── 测试：_try_cache_kline 投票机制 ──────────────────────────────────────────
+
+def test_try_cache_kline_voting_pass(dm_with_mocks):
+    """两个校验源一致,投票通过"""
+    dm, mock_tushare, mock_mootdx = dm_with_mocks
+
+    # 准备主数据
+    primary_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 100.0, 'high': 105.0, 'low': 99.0, 'close': 103.0, 'volume': 1000, 'amount': 100000},
+        {'date': '2024-01-02', 'open': 103.0, 'high': 108.0, 'low': 102.0, 'close': 107.0, 'volume': 1200, 'amount': 120000}
+    ])
+    # 设置 source 属性
+    primary_df.attrs['source'] = 'tushare'
+
+    # Mock 主数据源返回
+    mock_tushare.get_kline.return_value = primary_df.copy()
+
+    # Mock 校验源返回一致数据
+    mock_mootdx.get_kline.return_value = primary_df.copy()
+
+    # Mock config.get_sources_by_role 返回校验源列表
+    with patch.object(dm.config, 'get_sources_by_role', return_value=['mootdx', 'baostock', 'xtquant']):
+        # Mock baostock adapter
+        mock_baostock = MagicMock()
+        mock_baostock.is_connected = True
+        mock_baostock.get_kline.return_value = primary_df.copy()
+        dm.adapters['baostock'] = mock_baostock
+
+        # Mock xtquant adapter
+        mock_xtquant = MagicMock()
+        mock_xtquant.is_connected = True
+        mock_xtquant.get_kline.return_value = primary_df.copy()
+        dm.adapters['xtquant'] = mock_xtquant
+
+        # Mock validate_and_cache_voting 方法
+        with patch.object(dm.cache_manager, 'validate_and_cache_voting', return_value=primary_df.copy()) as mock_voting:
+            # 调用 _try_cache_kline（签名：code, df, start_date, end_date, count, adjust）
+            dm._try_cache_kline('600519', primary_df.copy(), '2024-01-01', '2024-01-02', None, 'qfq')
+
+            # 验证调用了 validate_and_cache_voting
+            assert mock_voting.called, "应该调用 validate_and_cache_voting"
+            call_args = mock_voting.call_args
+            assert call_args[1]['code'] == '600519'
+            assert call_args[1]['primary_source'] == 'tushare'
+            # 验证 validation_dfs 包含多个源
+            validation_dfs = call_args[1]['validation_dfs']
+            assert len(validation_dfs) >= 2, "应该有至少2个校验源"
+
+
+def test_try_cache_kline_voting_fail(dm_with_mocks):
+    """所有校验源不一致,投票失败"""
+    dm, mock_tushare, mock_mootdx = dm_with_mocks
+
+    # 准备主数据
+    primary_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 100.0, 'high': 105.0, 'low': 99.0, 'close': 103.0, 'volume': 1000, 'amount': 100000}
+    ])
+
+    # Mock 主数据源返回
+    mock_tushare.get_kline.return_value = primary_df.copy()
+
+    # Mock 校验源返回不一致数据(价格差异超过容差)
+    inconsistent_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 200.0, 'high': 205.0, 'low': 199.0, 'close': 203.0, 'volume': 1000, 'amount': 100000}
+    ])
+    mock_mootdx.get_kline.return_value = inconsistent_df.copy()
+
+    # Mock config.get_sources_by_role 返回校验源列表
+    with patch.object(dm.config, 'get_sources_by_role', return_value=['mootdx', 'baostock']):
+        # Mock baostock adapter
+        mock_baostock = MagicMock()
+        mock_baostock.is_connected = True
+        mock_baostock.get_kline.return_value = inconsistent_df.copy()
+        dm.adapters['baostock'] = mock_baostock
+
+        # Mock validate_and_cache_voting 返回 None（投票失败）
+        with patch.object(dm.cache_manager, 'validate_and_cache_voting', return_value=None) as mock_voting:
+            # 调用 _try_cache_kline
+            dm._try_cache_kline('600519', primary_df.copy(), '2024-01-01', '2024-01-01', None, 'qfq')
+
+            # 验证调用了 validate_and_cache_voting
+            assert mock_voting.called, "应该调用 validate_and_cache_voting"
+
+
+def test_try_cache_kline_voting_single_source(dm_with_mocks):
+    """只有一个校验源可用,降级为二选一"""
+    dm, mock_tushare, mock_mootdx = dm_with_mocks
+
+    # 准备主数据
+    primary_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 100.0, 'high': 105.0, 'low': 99.0, 'close': 103.0, 'volume': 1000, 'amount': 100000}
+    ])
+
+    # Mock 主数据源返回
+    mock_tushare.get_kline.return_value = primary_df.copy()
+
+    # Mock 只有一个校验源返回数据
+    mock_mootdx.get_kline.return_value = primary_df.copy()
+
+    # Mock config.get_sources_by_role 返回校验源列表
+    with patch.object(dm.config, 'get_sources_by_role', return_value=['mootdx']):
+        # Mock validate_and_cache_voting 方法（会降级为 validate_and_cache）
+        with patch.object(dm.cache_manager, 'validate_and_cache_voting', return_value=primary_df.copy()) as mock_voting:
+            # 调用 _try_cache_kline
+            dm._try_cache_kline('600519', primary_df.copy(), '2024-01-01', '2024-01-01', None, 'qfq')
+
+            # 验证调用了 validate_and_cache_voting
+            assert mock_voting.called, "应该调用 validate_and_cache_voting"
+            call_args = mock_voting.call_args
+            # 验证只有一个校验源
+            validation_dfs = call_args[1]['validation_dfs']
+            assert len(validation_dfs) == 1, "应该只有1个校验源"
