@@ -51,3 +51,4 @@ build/
 .spec-workflow/config.example.toml
 .spec-workflow/templates/
 .spec-workflow/user-templates/README.md
+.playwright-mcp/

@@ -39,9 +39,10 @@
       "roles": {
         "tick": { "priority": 1 },
         "kline_minute": { "priority": 1 },
-        "validation": { "priority": 1, "time_slot": "trading" }
+        "kline_day": { "priority": 2 },
+        "validation": { "priority": 1 }
       },
-      "comment": "实时Tick主数据源(需QMT客户端运行),分钟线主源,盘中校验源"
+      "comment": "实时Tick主数据源(需QMT客户端运行),分钟线主源,日线备用源+校验源"
     },
     "mootdx": {
       "enabled": true,
@@ -52,16 +53,15 @@
       "adjustflag": "qfq",
       "roles": {
         "kline_minute": { "priority": 2 },
-        "kline_day": { "priority": 2 },
-        "validation": { "priority": 3 }
+        "kline_day": { "priority": 3 }
       },
-      "comment": "日K线备用+分钟K线备用数据源"
+      "comment": "分钟K线备用+日K线备用数据源(前复权有已知问题,不作为校验源)"
     },
     "baostock": {
       "enabled": true,
       "priority": 3,
-      "timeout": 8,
-      "retry_times": 3,
+      "timeout": 3,
+      "retry_times": 1,
       "use_for": ["kline_day", "kline_minute", "valuation"],
       "adjustflag": "2",
       "roles": {
@@ -76,10 +76,12 @@
     "mode": "voting",
     "quorum": 2,
     "strategy": "first_to_quorum",
-    "sources": ["xtquant", "baostock", "mootdx"],
+    "sources": ["xtquant", "baostock"],
     "price_tolerance_abs": 0.01,
     "price_tolerance_pct": 0.005,
     "volume_tolerance_pct": 0.05,
+    "return_tolerance": 0.005,
+    "ratio_tolerance": 0.005,
     "min_pass_rate": 0.8,
     "skip_today_in_trading_hours": true
   },
@@ -100,7 +102,10 @@
     "validation": {
       "price_tolerance_abs": 0.01,
       "price_tolerance_pct": 0.005,
-      "volume_tolerance_pct": 0.05
+      "volume_tolerance_pct": 0.05,
+      "return_tolerance": 0.005,
+      "ratio_tolerance": 0.005,
+      "min_pass_rate": 0.8
     }
   },
   "health_check": {

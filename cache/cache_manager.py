@@ -5,6 +5,7 @@ SQLite缓存管理器
 """
 
 import sqlite3
+import numpy as np
 import pandas as pd
 import logging
 import os
@@ -40,6 +41,10 @@ class CacheManager:
         self.price_tolerance_abs = config.get('cache.validation.price_tolerance_abs', 0.01)
         self.price_tolerance_pct = config.get('cache.validation.price_tolerance_pct', 0.005)
         self.volume_tolerance_pct = config.get('cache.validation.volume_tolerance_pct', 0.05)
+        self.return_tolerance = config.get('cache.validation.return_tolerance', 0.005)
+        self.ratio_tolerance = config.get('cache.validation.ratio_tolerance', 0.005)
+        self.min_pass_rate = config.get('cache.validation.min_pass_rate',
+                             config.get('validation.min_pass_rate', 0.8))
 
         # 线程锁
         self.lock = threading.Lock()
@@ -316,103 +321,30 @@ class CacheManager:
             return df1
 
         try:
-            # 准备df1数据(确保包含必要列)
-            df1_cols = ['date', 'open', 'high', 'low', 'close', 'volume']
-            has_amount = 'amount' in df1.columns
-            if has_amount:
-                df1_cols.append('amount')
-
-            df1_clean = df1[df1_cols].copy()
-
-            # 准备df2数据(只需要价格和成交量列,删除重复列)
-            df2_temp = df2[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
-            # 删除重复列名(Mootdx有重复的volume列)
-            df2_clean = df2_temp.loc[:, ~df2_temp.columns.duplicated()]
-
-            # 合并两个数据源(按日期)
-            merged = pd.merge(
-                df1_clean,
-                df2_clean,
-                on='date',
-                suffixes=('_1', '_2'),
-                how='inner'
-            )
-
-            if merged.empty:
+            # 无日期重叠时无法校验，直接返回 df1
+            overlap = set(df1['date'].astype(str)) & set(df2['date'].astype(str))
+            if not overlap:
                 self.logger.warning(f"{source1}和{source2}没有重叠数据,无法校验")
                 return df1
 
-            # 校验每一行
-            validated_rows = []
+            # 用收益率通过率判断一致性（与投票路径对齐）
+            # 前复权因子在日收益率中完全抵消，多次除权不影响判断
+            pass_rate = self._calculate_pass_rate(df1, df2, code)
 
-            for _, row in merged.iterrows():
-                # 价格字段校验
-                price_valid = True
-                for field in ['open', 'high', 'low', 'close']:
-                    price1 = float(row[f'{field}_1'])
-                    price2 = float(row[f'{field}_2'])
-
-                    # 绝对差异
-                    abs_diff = abs(price1 - price2)
-                    # 相对差异
-                    pct_diff = abs_diff / max(price1, price2) if max(price1, price2) > 0 else 0
-
-                    # 使用Python原生bool判断,避免Series ambiguous错误
-                    if bool(abs_diff > self.price_tolerance_abs and pct_diff > self.price_tolerance_pct):
-                        self.logger.warning(
-                            f"{code} {row['date']} {field}价格差异过大: {price1} vs {price2}"
-                        )
-                        price_valid = False
-                        break
-
-                if not price_valid:
-                    continue
-
-                # 成交量校验
-                vol1 = float(row['volume_1'])
-                vol2 = float(row['volume_2'])
-                vol_diff = abs(vol1 - vol2) / max(vol1, vol2) if max(vol1, vol2) > 0 else 0
-
-                # 使用Python原生bool判断
-                if bool(vol_diff > self.volume_tolerance_pct):
-                    self.logger.warning(
-                        f"{code} {row['date']} 成交量差异过大: {vol1} vs {vol2}"
-                    )
-                    continue
-
-                # 校验通过,使用数据源1的数据
-                # amount列处理: 如果df2没有amount列,合并后amount列不会有后缀
-                amount_value = 0.0
-                if has_amount:
-                    if 'amount_1' in merged.columns:
-                        amount_value = float(row['amount_1'])
-                    elif 'amount' in merged.columns:
-                        amount_value = float(row['amount'])
-
-                validated_rows.append({
-                    'date': str(row['date']),
-                    'open': float(row['open_1']),
-                    'high': float(row['high_1']),
-                    'low': float(row['low_1']),
-                    'close': float(row['close_1']),
-                    'volume': float(row['volume_1']),
-                    'amount': amount_value
-                })
-
-            if not validated_rows:
-                self.logger.warning(f"{code}所有数据均未通过双源校验")
+            if pass_rate >= self.min_pass_rate:
+                # 通过：缓存完整主数据（df1），行数不因除权段差异而丢失
+                validated_df = df1.copy()
+                self.save_to_cache(code, validated_df, source1, source2, validated=True)
+                self.logger.info(
+                    f"{code}双源校验完成: {len(validated_df)}/{len(validated_df)}条通过"
+                    f" (收益率通过率={pass_rate*100:.1f}%)"
+                )
+                return validated_df
+            else:
+                self.logger.warning(
+                    f"{code}双源校验未通过: 收益率通过率={pass_rate*100:.1f}% < {self.min_pass_rate*100:.0f}%"
+                )
                 return None
-
-            validated_df = pd.DataFrame(validated_rows)
-
-            # 保存到缓存
-            self.save_to_cache(code, validated_df, source1, source2, validated=True)
-
-            self.logger.info(
-                f"{code}双源校验完成: {len(validated_df)}/{len(merged)}条通过"
-            )
-
-            return validated_df
 
         except Exception as e:
             self.logger.error(f"双源校验失败 {code}: {e}")
@@ -498,42 +430,44 @@ class CacheManager:
         code: str
     ) -> float:
         """
-        计算两个数据源的比对通过率
+        计算两个数据源的比对通过率（基于日收益率）
+
+        前复权因子在日收益率计算中完全抵消，非除权日两源收益率精确相等。
+        除权日（每年约 2-4 次）收益率会有差异，但占比 < 1.5%，不影响 80% 通过率阈值。
 
         Returns:
             通过率 (0.0-1.0)
         """
         try:
-            df1_clean = df1[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
-            df2_temp = df2[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
-            df2_clean = df2_temp.loc[:, ~df2_temp.columns.duplicated()]
+            # 各源独立排序并计算日收益率（close_t / close_{t-1} - 1）
+            d1 = df1[['date', 'close', 'volume']].copy().sort_values('date').reset_index(drop=True)
+            d2_tmp = df2[['date', 'close', 'volume']].copy()
+            d2 = d2_tmp.loc[:, ~d2_tmp.columns.duplicated()].sort_values('date').reset_index(drop=True)
 
-            merged = pd.merge(df1_clean, df2_clean, on='date', suffixes=('_1', '_2'), how='inner')
+            d1['ret'] = d1['close'].pct_change()
+            d2['ret'] = d2['close'].pct_change()
 
+            # 丢弃每源首行（无前一日，NaN）
+            d1 = d1.dropna(subset=['ret'])
+            d2 = d2.dropna(subset=['ret'])
+
+            merged = pd.merge(
+                d1[['date', 'ret', 'volume']],
+                d2[['date', 'ret', 'volume']],
+                on='date', suffixes=('_1', '_2'), how='inner'
+            )
             if merged.empty:
                 return 0.0
 
             passed = 0
             for _, row in merged.iterrows():
-                price_valid = True
-                for field in ['open', 'high', 'low', 'close']:
-                    p1 = float(row[f'{field}_1'])
-                    p2 = float(row[f'{field}_2'])
-                    abs_diff = abs(p1 - p2)
-                    pct_diff = abs_diff / max(p1, p2) if max(p1, p2) > 0 else 0
-                    if abs_diff > self.price_tolerance_abs and pct_diff > self.price_tolerance_pct:
-                        price_valid = False
-                        break
-
-                if not price_valid:
+                # 收益率差异：非除权日应 < 0.01%（浮点精度范围内）
+                if abs(float(row['ret_1']) - float(row['ret_2'])) > self.return_tolerance:
                     continue
-
-                v1 = float(row['volume_1'])
-                v2 = float(row['volume_2'])
-                vol_diff = abs(v1 - v2) / max(v1, v2) if max(v1, v2) > 0 else 0
-                if vol_diff > self.volume_tolerance_pct:
+                # 成交量：与前复权无关，直接比较
+                v1, v2 = float(row['volume_1']), float(row['volume_2'])
+                if max(v1, v2) > 0 and abs(v1 - v2) / max(v1, v2) > self.volume_tolerance_pct:
                     continue
-
                 passed += 1
 
             return passed / len(merged) if len(merged) > 0 else 0.0
@@ -541,6 +475,34 @@ class CacheManager:
         except Exception as e:
             self.logger.error(f"计算通过率失败 {code}: {e}")
             return 0.0
+
+    def get_validated_dates(self, code: str) -> set:
+        """
+        获取某只股票已通过校验的缓存日期集合
+
+        Args:
+            code: 股票代码
+
+        Returns:
+            已验证日期的set，如 {'2024-01-02', '2024-01-03', ...}
+        """
+        if not self.enabled:
+            return set()
+
+        try:
+            with self.lock:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT date FROM kline_cache WHERE code=? AND validated=1",
+                    (code,)
+                )
+                dates = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                return dates
+        except Exception as e:
+            self.logger.error(f"获取已验证日期失败 {code}: {e}")
+            return set()
 
     def cleanup_old_cache(self, days: Optional[int] = None):
         """

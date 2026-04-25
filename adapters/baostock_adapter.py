@@ -4,6 +4,7 @@ Baostock数据源适配器
 使用baostock库获取数据,主要用于K线和估值数据
 """
 
+import time
 from typing import Optional, Dict, Any
 import pandas as pd
 import baostock as bs
@@ -28,9 +29,15 @@ class BaostockAdapter(DataSourceAdapter):
         '60m': '60'    # 60分钟(兼容)
     }
 
+    # 快速失败参数（类级常量）
+    _FAST_FAIL_THRESHOLD = 3   # 连续失败 N 次后启用快速失败
+    _FAST_FAIL_COOLDOWN = 300  # 快速失败冷却窗口（秒）
+
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         self.login_result = None
+        self._consecutive_failures = 0
+        self._last_failure_time = 0.0
 
     def connect(self) -> bool:
         """连接Baostock数据源"""
@@ -92,8 +99,19 @@ class BaostockAdapter(DataSourceAdapter):
         Returns:
             DataFrame
         """
+        # 快速失败：连续失败超过阈值且在冷却窗口内，立即返回 None
+        if (self._consecutive_failures >= self._FAST_FAIL_THRESHOLD and
+                time.time() - self._last_failure_time < self._FAST_FAIL_COOLDOWN):
+            self.logger.debug(
+                f"baostock快速失败(连续{self._consecutive_failures}次网络故障，"
+                f"冷却剩余{self._FAST_FAIL_COOLDOWN - (time.time() - self._last_failure_time):.0f}s)"
+            )
+            return None
+
         if not self.is_connected:
             if not self.connect():
+                self._consecutive_failures += 1
+                self._last_failure_time = time.time()
                 return None
 
         try:
@@ -138,6 +156,8 @@ class BaostockAdapter(DataSourceAdapter):
             if result.error_code != '0':
                 self.logger.error(f"Baostock查询失败 {code}: {result.error_msg}")
                 self.last_error = result.error_msg
+                self._consecutive_failures += 1
+                self._last_failure_time = time.time()
                 return None
 
             # 转换为DataFrame
@@ -160,12 +180,16 @@ class BaostockAdapter(DataSourceAdapter):
             # 标准化
             df = self.standardize_dataframe(df)
 
+            # 成功：重置连续失败计数
+            self._consecutive_failures = 0
             return df
 
         except Exception as e:
             self.logger.error(f"Baostock获取K线失败 {code}: {e}")
             self.last_error = str(e)
             self.error_count += 1
+            self._consecutive_failures += 1
+            self._last_failure_time = time.time()
             return None
 
     def get_valuation(

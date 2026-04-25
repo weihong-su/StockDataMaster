@@ -6,6 +6,7 @@ StockDataMaster主数据接口
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, Any
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -278,12 +279,15 @@ class StockDataMaster:
         adjust: str
     ):
         """
-        尝试缓存日K线数据(并行三选二投票校验)
+        尝试缓存日K线数据(增量校验+并行三选二投票)
 
-        策略: 使用 validate_and_cache_voting 进行多源投票校验
-        - 多个校验源: 三选二投票(first-to-quorum)
-        - 单个校验源: 降级为双源校验
-        - 无校验源: 降级为直接缓存主数据
+        策略:
+        1. 查询已验证缓存的日期集合
+        2. 只对新增日期(未在缓存中)进行校验
+        3. 使用 validate_and_cache_voting 进行多源投票校验
+           - 多个校验源: 三选二投票(first-to-quorum)
+           - 单个校验源: 降级为双源校验
+           - 无校验源: 降级为直接缓存主数据
 
         Args:
             code: 股票代码
@@ -307,6 +311,24 @@ class StockDataMaster:
             # 获取主数据源名称
             primary_source = df.attrs.get('source', 'unknown')
 
+            # 🔥 增量缓存: 查询已验证的日期集合
+            validated_dates = self.cache_manager.get_validated_dates(code)
+
+            if validated_dates:
+                # 过滤出未缓存的新数据
+                cache_df['date'] = cache_df['date'].astype(str)
+                new_data_mask = ~cache_df['date'].isin(validated_dates)
+                new_df = cache_df[new_data_mask].copy()
+
+                if new_df.empty:
+                    self.logger.info(f"{code}所有数据已在缓存中({len(validated_dates)}条),跳过校验")
+                    return
+
+                self.logger.info(f"{code}增量缓存: 已有{len(validated_dates)}条,新增{len(new_df)}条待校验")
+                cache_df = new_df
+            else:
+                self.logger.debug(f"{code}首次缓存,全量校验{len(cache_df)}条")
+
             # 获取当前时段,用于时段感知的校验源选择
             time_slot = self._get_time_slot()
 
@@ -322,26 +344,59 @@ class StockDataMaster:
                 self.cache_manager.save_to_cache(code, cache_df, primary_source, 'none', validated=False)
                 return
 
+            # 🔥 增量校验: 只请求新数据的日期范围
+            if not cache_df.empty:
+                incremental_start = cache_df['date'].min()
+                incremental_end = cache_df['date'].max()
+            else:
+                incremental_start = start_date
+                incremental_end = end_date
+
             # 并行请求所有校验源数据
-            validation_dfs = {}
-            for vs_name in validation_sources:
-                vs_adapter = self.adapters.get(vs_name)
-                if not vs_adapter or not getattr(vs_adapter, 'is_connected', False):
-                    self.logger.debug(f"{vs_name}适配器不可用,跳过")
-                    continue
+            active_validation_sources = {
+                name: self.adapters[name]
+                for name in validation_sources
+                if self.adapters.get(name) and getattr(self.adapters[name], 'is_connected', False)
+            }
+            skipped = [s for s in validation_sources if s not in active_validation_sources]
+            for s in skipped:
+                self.logger.debug(f"{s}适配器不可用,跳过")
 
+            def _fetch_one(vs_name, vs_adapter):
                 try:
-                    self.logger.debug(f"请求{vs_name}校验数据: {code}")
-                    vs_df = vs_adapter.get_kline(code, 'd', start_date, end_date, actual_count, adjust)
-
-                    if vs_df is not None and not vs_df.empty:
-                        validation_dfs[vs_name] = vs_df
-                        self.logger.debug(f"{vs_name}返回{len(vs_df)}条校验数据")
-                    else:
-                        self.logger.debug(f"{vs_name}未返回数据")
+                    self.logger.debug(f"请求{vs_name}校验数据: {code} ({incremental_start} ~ {incremental_end})")
+                    vs_df = vs_adapter.get_kline(code, 'd', incremental_start, incremental_end, None, adjust)
+                    return vs_name, vs_df
                 except Exception as e:
                     self.logger.warning(f"{vs_name}校验数据请求失败: {e}")
-                    continue
+                    return vs_name, None
+
+            validation_dfs = {}
+            n_workers = max(len(active_validation_sources), 1)
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                futures = {
+                    executor.submit(_fetch_one, name, adapter): name
+                    for name, adapter in active_validation_sources.items()
+                }
+                incremental_dates = set(cache_df['date'].astype(str))
+                for future in as_completed(futures):
+                    vs_name, vs_df = future.result()
+                    if vs_df is not None and not vs_df.empty:
+                        vs_dates = set(vs_df['date'].astype(str))
+                        overlap = len(vs_dates & incremental_dates)
+                        coverage = overlap / len(incremental_dates) if incremental_dates else 0
+                        if coverage < 0.3:
+                            self.logger.warning(
+                                f"{vs_name}数据覆盖率{coverage:.0%}"
+                                f"({overlap}/{len(incremental_dates)}条)不足30%，跳过校验"
+                            )
+                        else:
+                            validation_dfs[vs_name] = vs_df
+                            self.logger.debug(
+                                f"{vs_name}返回{len(vs_df)}条校验数据，覆盖率{coverage:.0%}"
+                            )
+                    else:
+                        self.logger.debug(f"{vs_name}未返回数据")
 
             if not validation_dfs:
                 # 所有校验源请求失败,降级为直接缓存

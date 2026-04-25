@@ -372,24 +372,22 @@ class XtquantAdapter(DataSourceAdapter):
         adjust: str = 'qfq'
     ) -> Optional[pd.DataFrame]:
         """
-        获取K线数据（使用download_history_data + get_local_data工作流）
+        获取K线数据（download_history_data + get_market_data_ex 工作流）
+
+        工作流: download_history_data → 等待 → get_market_data_ex
+        - download_history_data: 异步下载到本地（返回None是正常的）
+        - get_market_data_ex: 从本地读取已下载数据（比get_local_data更可靠）
 
         阶段2优化: 集成智能缓存机制
-        - 日K线优先从缓存获取，命中率85%+
+        - 日K线优先从缓存获取
         - 缓存未命中时从xtquant获取并自动缓存
         - 盘中时段不缓存当日数据，盘后自动缓存
-        - 性能提升: 2-3秒 → 50ms (40-60倍)
-
-        基于2025-11-18测试结果优化：
-        - 工作流：download_history_data → 等待 → get_local_data
-        - 支持周期：1m/5m/15m/30m/60m/d（week不可用）
-        - 性能：平均< 200ms，远超其他数据源
 
         Args:
             code: 股票代码（6位数字或带前缀sh./sz.）
             freq: K线周期（'1m'/'5m'/'15m'/'30m'/'60m'/'d'）
-            start_date: 开始日期 'YYYYMMDD'（可选）
-            end_date: 结束日期 'YYYYMMDD'（可选）
+            start_date: 开始日期 'YYYYMMDD' 或 'YYYY-MM-DD'（可选）
+            end_date: 结束日期 'YYYYMMDD' 或 'YYYY-MM-DD'（可选）
             count: 获取条数（可选）
             adjust: 复权类型（'qfq'前复权）
 
@@ -430,9 +428,8 @@ class XtquantAdapter(DataSourceAdapter):
             '5m': '5m',
             '15m': '15m',
             '30m': '30m',
-            '60m': '60m',  # 测试验证：下载工作流支持
+            '60m': '60m',
             'd': '1d'
-            # 注意：'w'/'week'周期测试失败，已移除
         }
 
         if freq not in period_map:
@@ -442,20 +439,25 @@ class XtquantAdapter(DataSourceAdapter):
         xt_period = period_map[freq]
         xt_code = self._convert_code(code)
 
+        # 标准化日期格式（移除横线，转为YYYYMMDD）
+        if start_date:
+            start_date = start_date.replace('-', '')
+        if end_date:
+            end_date = end_date.replace('-', '')
+
         # 计算时间范围（如果未提供）
         if not start_date or not end_date:
             end_dt = datetime.now()
 
-            # 根据周期和count估算天数
             if count and count > 0:
                 days_per_bar = {
                     '1m': 0.01, '5m': 0.05, '15m': 0.15,
                     '30m': 0.3, '60m': 0.5, '1d': 1
                 }
-                days = int(count * days_per_bar.get(xt_period, 1) * 1.5)  # 预留50%余量
+                days = int(count * days_per_bar.get(xt_period, 1) * 1.5)
                 start_dt = end_dt - timedelta(days=max(days, 30))
             else:
-                start_dt = end_dt - timedelta(days=30)  # 默认30天
+                start_dt = end_dt - timedelta(days=30)
 
             start_date = start_dt.strftime('%Y%m%d')
             end_date = end_dt.strftime('%Y%m%d')
@@ -464,46 +466,54 @@ class XtquantAdapter(DataSourceAdapter):
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                # 步骤1: 下载历史数据
-                self.logger.debug(f"xtquant下载历史数据: {code} ({freq}) {start_date}-{end_date}")
+                # 步骤1: 下载历史数据到本地
+                # download_history_data 是异步操作，返回None是正常的
+                self.logger.debug(f"xtquant下载历史数据: {xt_code} ({xt_period}) {start_date}-{end_date}")
 
-                download_result = self.xt_data.download_history_data(
+                self.xt_data.download_history_data(
                     stock_code=xt_code,
                     period=xt_period,
                     start_time=start_date,
                     end_time=end_date
                 )
 
-                # 步骤2: 等待下载完成（关键！）
-                wait_time = 3 if xt_period in ['1m', '5m'] else 2
+                # 步骤2: 等待下载完成
+                # 分钟线数据量大，等待更久
+                wait_time = 5 if xt_period in ['1m', '5m'] else 3
                 time.sleep(wait_time)
 
-                # 步骤3: 读取本地数据
-                data = self.xt_data.get_local_data(
+                # 步骤3: 从本地读取数据
+                # 使用 get_market_data_ex（比 get_local_data 更可靠）
+                data = self.xt_data.get_market_data_ex(
                     field_list=[],  # 空列表=获取所有字段
                     stock_list=[xt_code],
                     period=xt_period,
                     start_time=start_date,
                     end_time=end_date,
-                    count=-1,  # -1=获取所有数据
+                    count=-1,
                     dividend_type='front' if adjust == 'qfq' else 'none',
                     fill_data=True
                 )
 
-                # 步骤4: 处理dict格式数据（关键！）
+                # 步骤4: 处理返回数据
                 df = None
                 if data is not None:
                     if isinstance(data, dict):
-                        # xtquant返回格式：{stock_code: DataFrame}
                         if xt_code in data and data[xt_code] is not None:
                             df = data[xt_code]
                         else:
-                            self.logger.warning(f"xtquant数据中没有{code}的数据")
+                            self.logger.debug(f"xtquant数据中没有{xt_code}的数据")
                     elif hasattr(data, 'empty'):
                         df = data
+                else:
+                    self.logger.warning(f"xtquant返回None: {code} ({freq})")
 
                 if df is None or df.empty:
-                    self.logger.warning(f"xtquant未获取到K线数据: {code} ({freq}) [尝试{attempt+1}/{max_retries}]")
+                    self.logger.warning(
+                        f"xtquant未获取到K线数据: {code} ({freq}) "
+                        f"[尝试{attempt+1}/{max_retries}] "
+                        f"(可能数据未订阅或盘后不可用)"
+                    )
                     if attempt < max_retries - 1:
                         time.sleep(1)
                         continue
@@ -565,23 +575,18 @@ class XtquantAdapter(DataSourceAdapter):
         """
         将xtquant数据转换为StockDataMaster标准格式
 
-        xtquant原始格式：
-        - time: 时间戳（毫秒）
+        get_market_data_ex 返回的 DataFrame:
+        - index: DatetimeIndex (已+8h转为CST时间)
+        - time列: 原始UTC毫秒时间戳 (不用这个，用index)
         - open/high/low/close: 价格
-        - volume/amount: 成交量/额
+        - volume: 成交量（股）
+        - amount: 成交额
 
         StockDataMaster标准格式：
         - date: 字符串 'YYYY-MM-DD'（日线）或 'YYYY-MM-DD HH:MM:SS'（分钟线）
         - open/high/low/close: float
         - volume: int
         - amount: float
-
-        Args:
-            df: xtquant原始DataFrame
-            freq: K线周期
-
-        Returns:
-            转换后的DataFrame或None
         """
         if df is None or df.empty:
             return None
@@ -590,16 +595,24 @@ class XtquantAdapter(DataSourceAdapter):
             result = pd.DataFrame()
 
             # 1. 转换时间字段
-            if 'time' in df.columns:
+            # get_market_data_ex 的 index 是 CST DatetimeIndex（已+8h）
+            # time 列是原始 UTC 时间戳，不能用（会偏移1天）
+            if isinstance(df.index, pd.DatetimeIndex):
+                # 直接用 index（CST时间，正确）
+                if freq == 'd':
+                    result['date'] = df.index.strftime('%Y-%m-%d')
+                else:
+                    result['date'] = df.index.strftime('%Y-%m-%d %H:%M:%S')
+            elif 'time' in df.columns:
+                # 回退：用 time 列，但需要 +8h 时区修正
                 time_values = df['time']
-
-                # 时间戳（毫秒）→ 日期字符串
                 if pd.api.types.is_integer_dtype(time_values):
-                    result['date'] = pd.to_datetime(time_values, unit='ms').dt.strftime('%Y-%m-%d %H:%M:%S')
+                    # +28800000ms = +8h (UTC -> CST)，与 xtquant 内部一致
+                    result['date'] = pd.to_datetime(
+                        time_values + 28800000, unit='ms'
+                    ).dt.strftime('%Y-%m-%d %H:%M:%S')
                 else:
                     result['date'] = pd.to_datetime(time_values).dt.strftime('%Y-%m-%d %H:%M:%S')
-
-                # 日线只需要日期
                 if freq == 'd':
                     result['date'] = result['date'].str[:10]
 
@@ -608,9 +621,9 @@ class XtquantAdapter(DataSourceAdapter):
                 if field in df.columns:
                     result[field] = df[field].astype(float)
 
-            # 3. 转换成交量（int）
+            # 3. 转换成交量（xtquant单位是"手"，×100转为"股"）
             if 'volume' in df.columns:
-                result['volume'] = df['volume'].astype(int)
+                result['volume'] = (df['volume'].astype(int) * 100)
 
             # 4. 转换成交额（float）
             if 'amount' in df.columns:

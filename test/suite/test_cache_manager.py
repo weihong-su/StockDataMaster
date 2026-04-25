@@ -37,6 +37,26 @@ def make_sample_df(days=5, start_days_ago=10):
     return pd.DataFrame(rows)
 
 
+def make_divergent_df(days=5, start_days_ago=10):
+    """生成日收益率与 make_sample_df 显著不同的测试数据（交替 ±10% 收益率）"""
+    today = date.today()
+    rows = []
+    close = 100.0
+    for i in range(days):
+        d = today - timedelta(days=start_days_ago - i)
+        close *= (1.10 if i % 2 == 0 else 0.90)
+        rows.append({
+            'date': d.strftime('%Y-%m-%d'),
+            'open': close * 0.99,
+            'high': close * 1.01,
+            'low':  close * 0.98,
+            'close': close,
+            'volume': 1_000_000.0 + i * 100,
+            'amount': close * 1_000_000.0
+        })
+    return pd.DataFrame(rows)
+
+
 # ─── 测试：初始化 ─────────────────────────────────────────────────────────────
 
 def test_init_creates_db(temp_cache_config):
@@ -104,16 +124,28 @@ def test_validate_and_cache_identical_pass(temp_cache_config):
     assert len(result) >= 1
 
 
-def test_validate_and_cache_price_diff_fail(temp_cache_config):
-    """价格差异超过容差时校验失败，返回 None"""
+def test_validate_and_cache_constant_scale_passes(temp_cache_config):
+    """价格整体缩放（不同 qfq 基准日）-> 收益率相同，应通过，返回完整主数据"""
     from StockDataMaster.cache.cache_manager import CacheManager
     cm = CacheManager(temp_cache_config, {})
     df1 = make_sample_df(days=5, start_days_ago=10)
     df2 = df1.copy()
-    # 价格提高 50%，远超 ±0.5% 容差
     for col in ['close', 'open', 'high', 'low']:
         df2[col] = df2[col] * 1.5
     result = cm.validate_and_cache("600522", df1, df2, "tushare", "mootdx")
+    assert result is not None
+    assert len(result) == 5
+
+
+def test_validate_and_cache_inconsistent_ratio_fails(temp_cache_config):
+    """收益率显著不同（真正的数据错误）-> 校验失败返回 None"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    df1 = make_sample_df(days=5, start_days_ago=10)
+    # make_divergent_df 产生交替 ±10% 收益率，与 df1 约 +1% 收益率差异显著
+    df2 = make_divergent_df(days=5, start_days_ago=10)
+    result = cm.validate_and_cache("600522", df1, df2, "tushare", "mootdx")
+    # 收益率差异远超 return_tolerance，通过率低于 min_pass_rate，应返回 None
     assert result is None
 
 
@@ -308,16 +340,14 @@ class TestVotingValidation:
         assert len(result) == 5
 
     def test_two_sources_disagree_fails(self, temp_cache_config):
-        """两个校验源都不一致 -> 失败"""
+        """两个校验源日收益率均与主数据不一致 -> 失败"""
         from StockDataMaster.cache.cache_manager import CacheManager
         cm = CacheManager(temp_cache_config, {})
 
         df1 = make_sample_df(5, start_days_ago=10)
-        # 构造完全不同的数据
-        df2 = make_sample_df(5, start_days_ago=10)
-        df2['close'] = df2['close'] * 10  # 巨大差异
-        df3 = make_sample_df(5, start_days_ago=10)
-        df3['close'] = df3['close'] * 20  # 巨大差异
+        # 构造日收益率完全不同的数据（交替 ±10%，vs 主数据约 +1%）
+        df2 = make_divergent_df(5, start_days_ago=10)
+        df3 = make_divergent_df(5, start_days_ago=10)
 
         result = cm.validate_and_cache_voting(
             code='600519',
@@ -327,17 +357,14 @@ class TestVotingValidation:
         )
         assert result is None
 
-    def test_one_agree_one_disagree_passes(self, temp_cache_config):
-        """一个一致一个不一致 -> 一票通过，但需要二票，所以失败"""
+    def test_one_agree_one_disagree_fails(self, temp_cache_config):
+        """一个校验源收益率一致、一个不一致 -> 一票不足二票，失败"""
         from StockDataMaster.cache.cache_manager import CacheManager
         cm = CacheManager(temp_cache_config, {})
 
         df1 = make_sample_df(5, start_days_ago=10)
-        # 一致
-        df2 = make_sample_df(5, start_days_ago=10)
-        # 不一致
-        df3 = make_sample_df(5, start_days_ago=10)
-        df3['close'] = df3['close'] * 10
+        df2 = make_sample_df(5, start_days_ago=10)           # 收益率一致
+        df3 = make_divergent_df(5, start_days_ago=10)        # 收益率不一致
 
         result = cm.validate_and_cache_voting(
             code='600519',
@@ -347,6 +374,24 @@ class TestVotingValidation:
         )
         # 只有一个源通过，不足二票，应该失败
         assert result is None
+
+    def test_different_qfq_base_passes(self, temp_cache_config):
+        """两源绝对价格不同但日收益率相同（不同 qfq 基准日）-> 应通过"""
+        from StockDataMaster.cache.cache_manager import CacheManager
+        cm = CacheManager(temp_cache_config, {})
+
+        df1 = make_sample_df(5, start_days_ago=10)
+        df2 = make_sample_df(5, start_days_ago=10)
+        # 模拟不同 qfq 基准日：全局乘以常数 0.85，绝对价格不同但收益率相同
+        df2[['open', 'high', 'low', 'close']] = df2[['open', 'high', 'low', 'close']] * 0.85
+
+        result = cm.validate_and_cache_voting(
+            code='600519',
+            primary_df=df1,
+            validation_dfs={'xtquant': df2},
+            primary_source='tushare'
+        )
+        assert result is not None  # 收益率一致，应通过
 
     def test_single_validation_source_passes(self, temp_cache_config):
         """只有一个校验源且一致 -> 通过(降级为二选一)"""
