@@ -24,10 +24,14 @@ class TushareAdapter(DataSourceAdapter):
         '60m': '60min'
     }
 
+    # 复权模式开关 (从 config.json 读取)
+    #   false (默认) → ts.pro_bar(adj='qfq') 原生前复权，数据最准确，需 2000 积分
+    #   true          → pro.daily() + pro.adj_factor() 手动拼接，仅需 120 积分
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         self.pro = None
         self.token = config.get('token', '')
+        self.use_adj_factor = config.get('use_adj_factor', False)
 
     def connect(self) -> bool:
         """连接Tushare数据源"""
@@ -71,6 +75,74 @@ class TushareAdapter(DataSourceAdapter):
         elif code.startswith(('0', '3')):
             return f'{code}.SZ'
         return code
+
+    def _apply_adj_factor(self, df: pd.DataFrame, ts_code: str,
+                          start_date: str, end_date: str,
+                          adjust: str = 'qfq') -> pd.DataFrame:
+        """
+        用 pro.adj_factor() 手动计算前复权/后复权价格
+
+        前复权 (qfq): price * adj_factor / latest_adj_factor  (最新价不变)
+        后复权 (hfq): price * adj_factor / earliest_adj_factor (最早价不变)
+
+        Args:
+            df: 未复权日线数据 (date 列已格式化为 YYYY-MM-DD)
+            ts_code: tushare 格式代码
+            start_date: 开始日期 YYYYMMDD
+            end_date: 结束日期 YYYYMMDD
+            adjust: 'qfq' 或 'hfq'
+
+        Returns:
+            复权后的 DataFrame; 失败时返回原始 df
+        """
+        try:
+            adj_df = self.pro.adj_factor(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if adj_df is None or adj_df.empty:
+                self.logger.warning(f"未获取到复权因子: {ts_code}")
+                return df
+
+            adj_df = adj_df.rename(columns={'trade_date': 'date'})
+            adj_df['date'] = pd.to_datetime(adj_df['date']).dt.strftime('%Y-%m-%d')
+
+            merged = df.merge(adj_df[['date', 'adj_factor']], on='date', how='left')
+
+            if merged['adj_factor'].isna().all():
+                self.logger.warning(f"复权因子全为空: {ts_code}")
+                return df
+
+            merged['adj_factor'] = merged['adj_factor'].ffill().bfill()
+
+            if adjust == 'qfq':
+                base_factor = merged['adj_factor'].iloc[-1]
+            else:
+                base_factor = merged['adj_factor'].iloc[0]
+
+            if base_factor == 0:
+                self.logger.warning(f"基准复权因子为0: {ts_code}")
+                return df
+
+            ratio = merged['adj_factor'] / base_factor
+
+            for col in ['open', 'high', 'low', 'close', 'pre_close']:
+                if col in merged.columns:
+                    merged[col] = merged[col] * ratio
+
+            merged = merged.drop(columns=['adj_factor'])
+
+            self.logger.debug(
+                f"{'前' if adjust == 'qfq' else '后'}复权完成: {ts_code}, "
+                f"ratio范围 {ratio.min():.4f}-{ratio.max():.4f}"
+            )
+            return merged
+
+        except Exception as e:
+            self.logger.warning(f"复权因子计算失败 {ts_code}: {e}")
+            return df
 
     def get_kline(
         self,
@@ -120,52 +192,71 @@ class TushareAdapter(DataSourceAdapter):
                 from datetime import datetime
                 end_date = datetime.now().strftime('%Y%m%d')
 
-            # 选择API - 使用daily接口(120积分可用)
-            # 注意: pro_bar需要2000积分,daily只需120积分
-            if freq in ['d', 'w', 'm']:
-                # 使用日线接口 (120积分)
+            # ---- 数据获取 + 复权 ----
+            #
+            # use_adj_factor=false (默认, 推荐):
+            #   ts.pro_bar(adj='qfq') 原生接口返回前复权数据
+            #   优点: 数据准确, 一步到位
+            #   要求: tushare 积分 >= 2000
+            #
+            # use_adj_factor=true (低积分备选):
+            #   pro.daily() 取未复权数据 + pro.adj_factor() 取复权因子
+            #   手动计算: qfq_price = price * adj_factor / latest_adj_factor
+            #   优点: 仅需 120 积分
+            #   缺点: 多一次 API 调用; 部分边缘数据可能有微小差异
+            #
+            if self.use_adj_factor:
+                # --- 模式 B: daily + adj_factor 手动复权 (120 积分) ---
                 df = self.pro.daily(
                     ts_code=ts_code,
                     start_date=start_date,
                     end_date=end_date
                 )
 
-                # 如果需要复权,手动处理(因为daily接口不支持复权参数)
-                # 注意: 完整的复权需要获取除权除息数据,这里返回未复权数据
+                if df is None or df.empty:
+                    self.logger.debug(f"Tushare未获取到数据: {code}")
+                    return None
+
+                # 先重命名 + 格式化, 再做手动复权
+                df = df.rename(columns={
+                    'trade_date': 'date',
+                    'ts_code': 'code',
+                    'vol': 'volume',
+                    'pct_chg': 'pct_change'
+                })
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                df = df.sort_values('date').reset_index(drop=True)
+
                 if adjust in ['qfq', 'hfq']:
-                    # 改为debug级别,避免重复警告
-                    self.logger.debug(f"daily接口不支持复权,返回未复权数据(如需复权需使用pro_bar接口,但需2000积分)")
+                    df = self._apply_adj_factor(df, ts_code, start_date, end_date, adjust)
 
             else:
-                # 分钟线数据: Tushare的分钟线需要2000积分
-                # 这里使用daily接口的最新数据作为替代
-                self.logger.warning(f"Tushare分钟线需要2000积分,使用日线数据替代")
-                df = self.pro.daily(
+                # --- 模式 A: pro_bar 原生复权 (2000 积分, 默认) ---
+                # ts.pro_bar 直接返回已复权数据, adj 参数: qfq/hfq/None
+                adj_param = adjust if adjust in ('qfq', 'hfq') else None
+                df = ts.pro_bar(
                     ts_code=ts_code,
                     start_date=start_date,
-                    end_date=end_date
+                    end_date=end_date,
+                    adj=adj_param,
+                    freq=freq if freq in ['d', 'w', 'm'] else 'd'
                 )
 
-            if df is None or df.empty:
-                # 改为debug级别,避免重复警告
-                self.logger.debug(f"Tushare未获取到数据: {code}")
-                return None
+                if df is None or df.empty:
+                    self.logger.debug(f"Tushare未获取到数据: {code}")
+                    return None
 
-            # 列名映射
-            # daily接口返回: ts_code, trade_date, open, high, low, close, pre_close, change, pct_chg, vol, amount
-            df = df.rename(columns={
-                'trade_date': 'date',
-                'ts_code': 'code',
-                'vol': 'volume',  # daily接口的vol单位是"手"
-                'pct_chg': 'pct_change'
-            })
-
-            # 日期格式转换: YYYYMMDD -> YYYY-MM-DD
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-
-            # 排序(Tushare返回的是倒序)
-            df = df.sort_values('date').reset_index(drop=True)
+                # pro_bar 返回的列名: trade_date, open, high, low, close, vol, amount ...
+                df = df.rename(columns={
+                    'trade_date': 'date',
+                    'ts_code': 'code',
+                    'vol': 'volume',
+                    'pct_chg': 'pct_change'
+                })
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                df = df.sort_values('date').reset_index(drop=True)
 
             # 如果指定了count,只取最近count条
             if count:

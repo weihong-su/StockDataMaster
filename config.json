@@ -8,11 +8,12 @@
       "retry_times": 2,
       "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
       "use_for": ["kline_day"],
+      "use_adj_factor": false,
       "roles": {
         "kline_day": { "priority": 1 },
         "valuation": { "priority": 1 }
       },
-      "comment": "日K线主数据源(pro账号),复权数据准确"
+      "comment": "日K线主数据源; use_adj_factor=false(默认): pro_bar原生复权(需2000积分); true: daily+adj_factor手动复权(120积分)"
     },
     "xtquant": {
       "enabled": true,

@@ -16,7 +16,19 @@ import threading
 import time
 from datetime import datetime, timedelta
 from .base_adapter import DataSourceAdapter
-from ..utils.retry_utils import RetryStats
+
+# 兼容相对导入和绝对导入
+try:
+    from ..utils.retry_utils import RetryStats
+except (ImportError, ValueError):
+    # 当作为独立模块导入时，使用绝对导入
+    import sys
+    import os
+    _current_dir = os.path.dirname(os.path.abspath(__file__))
+    _parent_dir = os.path.dirname(_current_dir)
+    if _parent_dir not in sys.path:
+        sys.path.insert(0, _parent_dir)
+    from utils.retry_utils import RetryStats
 
 
 class XtquantAdapter(DataSourceAdapter):
@@ -87,8 +99,13 @@ class XtquantAdapter(DataSourceAdapter):
             try:
                 # 优先尝试使用LibLoader
                 if self._lib_loader is None:
-                    from ..utils.lib_loader import get_lib_loader
-                    from ..config import Config
+                    try:
+                        from ..utils.lib_loader import get_lib_loader
+                        from ..config import Config
+                    except (ImportError, ValueError):
+                        # 绝对导入回退
+                        from utils.lib_loader import get_lib_loader
+                        from config import Config
                     cfg = Config()
                     self._lib_loader = get_lib_loader({'use_builtin_libs': cfg.get('use_builtin_libs', True)})
 
