@@ -39,22 +39,31 @@ class BaostockAdapter(DataSourceAdapter):
         self._consecutive_failures = 0
         self._last_failure_time = 0.0
 
+    # 连接超时（秒）：通过 socket.setdefaulttimeout 控制 bs.login() 的 TCP 超时
+    _CONNECT_TIMEOUT = 5
+
     def connect(self) -> bool:
-        """连接Baostock数据源"""
+        """连接Baostock数据源（带超时保护，最多等待 _CONNECT_TIMEOUT 秒）"""
+        import socket
+        original_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(self._CONNECT_TIMEOUT)
         try:
             self.login_result = bs.login()
-            if self.login_result.error_code == '0':
-                self.is_connected = True
-                self.logger.info(f"{self.name} 连接成功")
-                return True
-            else:
-                self.logger.error(f"{self.name} 连接失败: {self.login_result.error_msg}")
-                self.last_error = self.login_result.error_msg
-                self.is_connected = False
-                return False
         except Exception as e:
             self.logger.error(f"{self.name} 连接失败: {e}")
             self.last_error = str(e)
+            self.is_connected = False
+            return False
+        finally:
+            socket.setdefaulttimeout(original_timeout)
+
+        if self.login_result.error_code == '0':
+            self.is_connected = True
+            self.logger.info(f"{self.name} 连接成功")
+            return True
+        else:
+            self.logger.error(f"{self.name} 连接失败: {self.login_result.error_msg}")
+            self.last_error = self.login_result.error_msg
             self.is_connected = False
             return False
 

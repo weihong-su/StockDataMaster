@@ -169,12 +169,17 @@ class HealthManager:
 
         # 尝试恢复每个用途
         for usage in xtquant_uses:
+            # 跳过 active_sources 不追踪的角色（如 validation 数据校验角色
+            # 不需要"活跃源"概念，只是辅助校验用）
+            if usage not in self.active_sources:
+                continue
+
             current_source = self.active_sources.get(usage)
 
             # 如果当前不是xtquant,且xtquant可用,则切换回xtquant
             if current_source != 'xtquant':
                 with self.lock:
-                    old_source = self.active_sources[usage]
+                    old_source = self.active_sources.get(usage)
                     self.active_sources[usage] = 'xtquant'
                     self.logger.info(
                         f"[交易时段] {usage}数据源已恢复: {old_source} -> xtquant (xtquant更权威)"
