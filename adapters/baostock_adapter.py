@@ -149,8 +149,11 @@ class BaostockAdapter(DataSourceAdapter):
             # 设置复权类型: 2=前复权
             adjustflag = '2' if adjust == 'qfq' else '1' if adjust == 'hfq' else '3'
 
-            # 定义字段
-            fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag"
+            # 定义字段（turn=换手率，仅日线有效；分钟线忽略该字段）
+            if bs_freq == 'd':
+                fields = "date,code,open,high,low,close,preclose,volume,amount,turn,adjustflag"
+            else:
+                fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag"
 
             # 查询数据
             result = bs.query_history_k_data_plus(
@@ -177,7 +180,7 @@ class BaostockAdapter(DataSourceAdapter):
                 return None
 
             # 数值类型转换
-            numeric_cols = ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount']
+            numeric_cols = ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 'turn']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')

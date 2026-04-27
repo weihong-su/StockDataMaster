@@ -59,7 +59,7 @@
       "comment": "分钟K线备用+日K线备用数据源(前复权有已知问题,不作为校验源)"
     },
     "baostock": {
-      "enabled": true,
+      "enabled": false,
       "priority": 3,
       "timeout": 3,
       "retry_times": 1,
@@ -70,14 +70,14 @@
         "kline_minute": { "priority": 3 },
         "validation": { "priority": 2 }
       },
-      "comment": "日K线/分钟K线备用数据源,校验源"
+      "comment": "DISABLED: TCP 10030端口不可达(2026-04); 日K线/分钟K线备用数据源,校验源"
     }
   },
   "validation": {
     "mode": "voting",
-    "quorum": 2,
+    "quorum": 1,
     "strategy": "first_to_quorum",
-    "sources": ["xtquant", "baostock"],
+    "sources": ["xtquant"],
     "price_tolerance_abs": 0.01,
     "price_tolerance_pct": 0.005,
     "volume_tolerance_pct": 0.05,

@@ -70,6 +70,10 @@ class TushareAdapter(DataSourceAdapter):
             Tushare格式代码
         """
         code = self.normalize_code(code)
+        # 如果已经是 tushare 格式（带 .SH/.SZ 后缀），直接返回
+        if code.endswith(('.SH', '.SZ')):
+            return code
+        # 否则根据首位数字添加后缀
         if code.startswith(('6', '5')):
             return f'{code}.SH'
         elif code.startswith(('0', '3')):
@@ -272,11 +276,33 @@ class TushareAdapter(DataSourceAdapter):
                 df['amount'] = df['amount'] * 1000
                 self.logger.debug(f"成交额单位转换: 千元 -> 元 (*1000)")
 
+            # 日K线：额外获取换手率 (turnover_rate -> turn)
+            if freq == 'd':
+                try:
+                    turn_df = self.pro.daily_basic(
+                        ts_code=ts_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        fields='trade_date,turnover_rate'
+                    )
+                    if turn_df is not None and not turn_df.empty:
+                        turn_df = turn_df.rename(columns={
+                            'trade_date': 'date',
+                            'turnover_rate': 'turn'
+                        })
+                        turn_df['date'] = pd.to_datetime(turn_df['date']).dt.strftime('%Y-%m-%d')
+                        df = df.merge(turn_df[['date', 'turn']], on='date', how='left')
+                except Exception as te:
+                    self.logger.debug(f"获取换手率失败 {code}: {te}")
+
             # 确保必要列
             required_cols = ['date', 'open', 'high', 'low', 'close', 'volume']
             if not all(col in df.columns for col in required_cols):
                 self.logger.error(f"数据列不完整: {df.columns.tolist()}")
                 return None
+
+            # 标准化
+            df = self.standardize_dataframe(df)
 
             return df
 

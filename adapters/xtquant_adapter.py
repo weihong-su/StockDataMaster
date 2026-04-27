@@ -648,6 +648,10 @@ class XtquantAdapter(DataSourceAdapter):
             else:
                 result['amount'] = 0.0
 
+            # 5. 换手率（日线专属字段，xtquant 提供 turnoverRate）
+            if freq == 'd' and 'turnoverRate' in df.columns:
+                result['turn'] = df['turnoverRate'].astype(float)
+
             # 5. 按时间排序（升序）
             result = result.sort_values('date').reset_index(drop=True)
 
