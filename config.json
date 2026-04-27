@@ -40,23 +40,24 @@
       "roles": {
         "tick": { "priority": 1 },
         "kline_minute": { "priority": 1 },
-        "kline_day": { "priority": 2 },
+        "kline_day": { "priority": 3 },
         "validation": { "priority": 1 }
       },
-      "comment": "实时Tick主数据源(需QMT客户端运行),分钟线主源,日线备用源+校验源"
+      "comment": "实时Tick主数据源(需QMT客户端运行),分钟线主源,日K线第三备用+校验源"
     },
     "mootdx": {
       "enabled": true,
       "priority": 2,
       "timeout": 5,
       "retry_times": 3,
-      "use_for": ["kline_day", "kline_minute"],
+      "use_for": ["kline_day", "kline_minute", "tick"],
       "adjustflag": "qfq",
       "roles": {
         "kline_minute": { "priority": 2 },
-        "kline_day": { "priority": 3 }
+        "kline_day": { "priority": 2 },
+        "tick": { "priority": 2 }
       },
-      "comment": "分钟K线备用+日K线备用数据源(前复权有已知问题,不作为校验源)"
+      "comment": "分钟K线备用+日K线第二备用+Tick备用数据源(前复权有已知问题,不作为校验源)"
     },
     "baostock": {
       "enabled": false,
