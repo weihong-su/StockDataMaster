@@ -81,6 +81,16 @@ class PreMarketRegressionTest:
                 "test_periods": TEST_PERIODS
             }
 
+            # 预热股票名称缓存 (Tushare pro.stock_basic 一次拿全市场)
+            try:
+                name_count = self.master.warmup_stock_names()
+                self._log_test("预热股票名称缓存", name_count > 0,
+                              f"已缓存 {name_count} 只股票名称")
+                print(f"   [OK] 股票名称预热: {name_count} 只")
+            except Exception as e:
+                self._log_test("预热股票名称缓存", False, str(e))
+                print(f"   [WARN] 股票名称预热失败: {e}")
+
             print(f"\n[OK] 初始化成功")
             print(f"   Python版本: {platform.python_version()}")
             print(f"   操作系统: {platform.platform()}")
