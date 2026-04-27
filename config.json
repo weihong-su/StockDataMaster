@@ -9,6 +9,7 @@
       "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
       "use_for": ["kline_day"],
       "use_adj_factor": false,
+      "max_calls_per_minute": 500,
       "roles": {
         "kline_day": { "priority": 1 },
         "valuation": { "priority": 1 }

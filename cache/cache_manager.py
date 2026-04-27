@@ -675,6 +675,47 @@ class CacheManager:
             self.logger.error(f"缓存股票名称失败: {e}")
             return False
 
+    def bulk_cache_stock_names(self, names: dict, source: str = 'tushare') -> int:
+        """
+        批量缓存股票名称（单事务写入）
+
+        Args:
+            names: {code: name} 字典
+            source: 数据来源
+
+        Returns:
+            成功写入数量
+        """
+        if not self.enabled or not names:
+            return 0
+
+        try:
+            with self.lock:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                data = [(code, name, source, code, now, now)
+                        for code, name in names.items()]
+
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO stock_name_cache
+                    (code, name, source, created_at, updated_at)
+                    VALUES (?, ?, ?,
+                        COALESCE((SELECT created_at FROM stock_name_cache WHERE code = ?), ?),
+                        ?)
+                ''', data)
+
+                conn.commit()
+                conn.close()
+
+                self.logger.info(f"批量缓存股票名称: {len(data)} 只 (来源: {source})")
+                return len(data)
+
+        except Exception as e:
+            self.logger.error(f"批量缓存股票名称失败: {e}")
+            return 0
+
     def get_stock_name_cache_count(self) -> int:
         """获取股票名称缓存数量"""
         if not self.enabled:

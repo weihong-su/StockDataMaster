@@ -868,9 +868,29 @@ class StockDataMaster:
             self.logger.debug(f"xtquant获取股票名称失败: {code} {e}")
             return None
 
+    def _get_stock_name_from_tushare(self, code: str) -> Optional[str]:
+        """
+        从 tushare 获取股票名称 (L3)
+
+        Args:
+            code: 6位纯数字代码
+
+        Returns:
+            股票名称，失败返回 None
+        """
+        adapter = self.adapters.get('tushare')
+        if not adapter or not adapter.is_connected:
+            return None
+
+        try:
+            return adapter.get_stock_name(code)
+        except Exception as e:
+            self.logger.debug(f"tushare获取股票名称失败: {code} {e}")
+            return None
+
     def _get_stock_name_from_baostock(self, code: str) -> Optional[str]:
         """
-        从 baostock 获取股票名称 (L3)
+        从 baostock 获取股票名称 (L4)
 
         Args:
             code: 6位纯数字代码
@@ -943,11 +963,12 @@ class StockDataMaster:
 
     def get_stock_name(self, code: str) -> str:
         """
-        获取股票名称 - 三级查找链
+        获取股票名称 - 四级查找链
 
         L1: 内存缓存 dict
         L2: xtquant.get_stock_name()
-        L3: baostock query_stock_basic()
+        L3: tushare pro.stock_basic()
+        L4: baostock query_stock_basic()
 
         Args:
             code: 股票代码，支持 '600519', 'sh.600519', '600519.SH' 格式
@@ -970,19 +991,63 @@ class StockDataMaster:
         name = self._get_stock_name_from_xtquant(pure_code)
         if name:
             self._stock_name_cache[pure_code] = name
+            self.cache_manager.cache_stock_name(pure_code, name, 'xtquant')
             self.logger.info(f"L2 xtquant获取股票名称: {pure_code} -> {name}")
             return name
 
-        # L3: baostock
+        # L3: tushare
+        name = self._get_stock_name_from_tushare(pure_code)
+        if name:
+            self._stock_name_cache[pure_code] = name
+            self.cache_manager.cache_stock_name(pure_code, name, 'tushare')
+            self.logger.info(f"L3 tushare获取股票名称: {pure_code} -> {name}")
+            return name
+
+        # L4: baostock
         name = self._get_stock_name_from_baostock(pure_code)
         if name:
             self._stock_name_cache[pure_code] = name
-            self.logger.info(f"L3 baostock获取股票名称: {pure_code} -> {name}")
+            self.cache_manager.cache_stock_name(pure_code, name, 'baostock')
+            self.logger.info(f"L4 baostock获取股票名称: {pure_code} -> {name}")
             return name
 
         # 所有级别失败，返回代码本身
         self.logger.warning(f"所有级别查找失败，返回代码本身: {pure_code}")
         return pure_code
+
+    def warmup_stock_names(self) -> int:
+        """
+        预热股票名称缓存 - 从 Tushare 批量获取全市场股票名称，
+        写入内存缓存和 SQLite 持久化缓存。
+
+        调用时机：初始化后、盘前准备阶段、或缓存为空时。
+
+        Returns:
+            缓存的股票名称数量
+        """
+        adapter = self.adapters.get('tushare')
+        if not adapter or not adapter.is_connected:
+            self.logger.warning("Tushare未连接，跳过股票名称预热")
+            return 0
+
+        try:
+            names = adapter.get_all_stock_names()
+            if not names:
+                self.logger.warning("Tushare未返回股票名称数据")
+                return 0
+
+            # 写入内存缓存
+            self._stock_name_cache.update(names)
+
+            # 批量写入 SQLite
+            count = self.cache_manager.bulk_cache_stock_names(names, source='tushare')
+
+            self.logger.info(f"股票名称预热完成: {count} 只股票已缓存 (内存+SQLite)")
+            return count
+
+        except Exception as e:
+            self.logger.error(f"股票名称预热失败: {e}")
+            return 0
 
     def close(self):
         """关闭DataMaster,清理资源"""
