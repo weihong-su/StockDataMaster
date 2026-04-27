@@ -194,7 +194,10 @@ class StockDataMaster:
         df = self._fetch_kline_from_source(code, freq, start_date, end_date, count, adjust)
 
         # 日线数据尝试缓存(双源校验)
-        if df is not None and freq == 'd' and use_cache:
+        # 注意：无论 use_cache 是否为 True，已获取的数据都应尝试缓存。
+        # use_cache 仅控制上面的"是否从缓存读取"，不应影响写入。
+        # 否则 warmup 路径传入 use_cache=False 时，拉取的新数据不会写入缓存。
+        if df is not None and freq == 'd':
             self._try_cache_kline(code, df, start_date, end_date, count, adjust)
 
         return df
