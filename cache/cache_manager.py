@@ -81,6 +81,7 @@ class CacheManager:
                     close REAL,
                     volume REAL,
                     amount REAL,
+                    turn REAL,
                     source1 TEXT,
                     source2 TEXT,
                     validated INTEGER DEFAULT 0,
@@ -105,6 +106,12 @@ class CacheManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_code_date ON kline_cache(code, date)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_validated ON kline_cache(validated)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_stock_name ON stock_name_cache(code)')
+
+            # 自动迁移：为旧表补充 turn 列（换手率）
+            try:
+                cursor.execute("ALTER TABLE kline_cache ADD COLUMN turn REAL")
+            except Exception:
+                pass  # 列已存在，忽略
 
             conn.commit()
             conn.close()
@@ -166,7 +173,7 @@ class CacheManager:
                 conn = sqlite3.connect(self.db_path)
 
                 # 构建查询
-                query = "SELECT date,open,high,low,close,volume,amount FROM kline_cache WHERE code=? AND validated=1"
+                query = "SELECT date,open,high,low,close,volume,amount,turn FROM kline_cache WHERE code=? AND validated=1"
                 params = [code]
 
                 if start_date:
@@ -257,9 +264,9 @@ class CacheManager:
                     # 使用REPLACE实现更新或插入
                     cursor.execute('''
                         REPLACE INTO kline_cache (
-                            code, date, open, high, low, close, volume, amount,
+                            code, date, open, high, low, close, volume, amount, turn,
                             source1, source2, validated, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         code,
                         row_date,
@@ -269,6 +276,7 @@ class CacheManager:
                         float(row['close']),
                         float(row['volume']),
                         float(row.get('amount', 0)),
+                        float(row['turn']) if 'turn' in row.index and pd.notna(row.get('turn', None)) else None,
                         source1,
                         source2,
                         1 if validated else 0,
