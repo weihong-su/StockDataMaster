@@ -4,6 +4,9 @@ Tushare数据源适配器
 使用tushare库获取数据,主要用于估值数据和K线数据
 """
 
+import time
+import threading
+from collections import deque
 from typing import Optional, Dict, Any
 import pandas as pd
 import tushare as ts
@@ -32,6 +35,10 @@ class TushareAdapter(DataSourceAdapter):
         self.pro = None
         self.token = config.get('token', '')
         self.use_adj_factor = config.get('use_adj_factor', False)
+        # 滑动窗口限速：每分钟最多 max_calls_per_minute 次 API 调用
+        self._max_cpm: int = config.get('max_calls_per_minute', 500)
+        self._rate_times: deque = deque()
+        self._rate_lock = threading.Lock()
 
     def connect(self) -> bool:
         """连接Tushare数据源"""
@@ -58,6 +65,22 @@ class TushareAdapter(DataSourceAdapter):
         self.pro = None
         self.is_connected = False
         self.logger.info(f"{self.name} 已断开连接")
+
+    def _call(self, func, **kwargs):
+        """频次限速封装：用滑动窗口控制每分钟 API 调用次数不超过 max_calls_per_minute。"""
+        while True:
+            with self._rate_lock:
+                now = time.monotonic()
+                # 清理 60 秒前的旧记录
+                while self._rate_times and now - self._rate_times[0] >= 60.0:
+                    self._rate_times.popleft()
+                if len(self._rate_times) < self._max_cpm:
+                    self._rate_times.append(now)
+                    break
+                wait = 60.0 - (now - self._rate_times[0])
+            self.logger.debug(f"Tushare 频次已达 {self._max_cpm}/min 上限，等待 {wait:.2f}s")
+            time.sleep(max(wait, 0.001))
+        return func(**kwargs)
 
     def _convert_code(self, code: str) -> str:
         """
@@ -100,11 +123,10 @@ class TushareAdapter(DataSourceAdapter):
             复权后的 DataFrame; 失败时返回原始 df
         """
         try:
-            adj_df = self.pro.adj_factor(
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date
-            )
+            adj_df = self._call(self.pro.adj_factor,
+                                ts_code=ts_code,
+                                start_date=start_date,
+                                end_date=end_date)
 
             if adj_df is None or adj_df.empty:
                 self.logger.warning(f"未获取到复权因子: {ts_code}")
@@ -155,7 +177,8 @@ class TushareAdapter(DataSourceAdapter):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         count: Optional[int] = None,
-        adjust: str = 'qfq'
+        adjust: str = 'qfq',
+        fetch_turn: bool = True
     ) -> Optional[pd.DataFrame]:
         """
         获取K线数据
@@ -167,6 +190,7 @@ class TushareAdapter(DataSourceAdapter):
             end_date: 结束日期 YYYY-MM-DD
             count: 获取数量
             adjust: 复权类型 'qfq'=前复权
+            fetch_turn: 是否额外调用 daily_basic 获取换手率（默认True；预热时设为False节省API调用）
 
         Returns:
             DataFrame
@@ -211,11 +235,10 @@ class TushareAdapter(DataSourceAdapter):
             #
             if self.use_adj_factor:
                 # --- 模式 B: daily + adj_factor 手动复权 (120 积分) ---
-                df = self.pro.daily(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
+                df = self._call(self.pro.daily,
+                               ts_code=ts_code,
+                               start_date=start_date,
+                               end_date=end_date)
 
                 if df is None or df.empty:
                     self.logger.debug(f"Tushare未获取到数据: {code}")
@@ -239,13 +262,12 @@ class TushareAdapter(DataSourceAdapter):
                 # --- 模式 A: pro_bar 原生复权 (2000 积分, 默认) ---
                 # ts.pro_bar 直接返回已复权数据, adj 参数: qfq/hfq/None
                 adj_param = adjust if adjust in ('qfq', 'hfq') else None
-                df = ts.pro_bar(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date,
-                    adj=adj_param,
-                    freq=freq if freq in ['d', 'w', 'm'] else 'd'
-                )
+                df = self._call(ts.pro_bar,
+                               ts_code=ts_code,
+                               start_date=start_date,
+                               end_date=end_date,
+                               adj=adj_param,
+                               freq=freq if freq in ['d', 'w', 'm'] else 'd')
 
                 if df is None or df.empty:
                     self.logger.debug(f"Tushare未获取到数据: {code}")
@@ -276,15 +298,15 @@ class TushareAdapter(DataSourceAdapter):
                 df['amount'] = df['amount'] * 1000
                 self.logger.debug(f"成交额单位转换: 千元 -> 元 (*1000)")
 
-            # 日K线：额外获取换手率 (turnover_rate -> turn)
-            if freq == 'd':
+            # 日K线：可选获取换手率（fetch_turn=False 时跳过，节省 1 次 API 调用）
+            # 预热场景传 fetch_turn=False；换手率可通过 get_daily_basic_batch 批量补充
+            if freq == 'd' and fetch_turn:
                 try:
-                    turn_df = self.pro.daily_basic(
-                        ts_code=ts_code,
-                        start_date=start_date,
-                        end_date=end_date,
-                        fields='trade_date,turnover_rate'
-                    )
+                    turn_df = self._call(self.pro.daily_basic,
+                                        ts_code=ts_code,
+                                        start_date=start_date,
+                                        end_date=end_date,
+                                        fields='trade_date,turnover_rate')
                     if turn_df is not None and not turn_df.empty:
                         turn_df = turn_df.rename(columns={
                             'trade_date': 'date',
@@ -351,12 +373,11 @@ class TushareAdapter(DataSourceAdapter):
                 start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
 
             # 查询每日指标
-            df = self.pro.daily_basic(
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date,
-                fields='ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,circ_mv'
-            )
+            df = self._call(self.pro.daily_basic,
+                            ts_code=ts_code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            fields='ts_code,trade_date,pe_ttm,pb,ps_ttm,total_mv,circ_mv')
 
             if df is None or df.empty:
                 self.logger.warning(f"Tushare未获取到估值数据: {code}")
@@ -413,4 +434,113 @@ class TushareAdapter(DataSourceAdapter):
         except Exception as e:
             self.logger.error(f"Tushare模拟tick失败 {code}: {e}")
             self.last_error = str(e)
+            return None
+
+    # ------------------------------------------------------------------
+    # 批量接口：按交易日一次拉取全市场，用于高效预热
+    # ------------------------------------------------------------------
+
+    def get_daily_batch(self, trade_date: str) -> Optional[pd.DataFrame]:
+        """
+        按交易日拉取全市场未复权日线行情（daily 接口，约 0.25s/次，覆盖全部 A 股）。
+
+        返回列: date, ts_code, open, high, low, close, volume, amount
+        调用方应自行做前复权（与 get_adj_factor_batch 配合）。
+        """
+        if not self.is_connected:
+            if not self.connect():
+                return None
+        try:
+            df = self._call(self.pro.daily, trade_date=trade_date)
+            if df is None or df.empty:
+                return None
+            df = df.rename(columns={'trade_date': 'date', 'vol': 'volume'})
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            df['volume'] = df['volume'] * 100    # 手 -> 股
+            df['amount'] = df['amount'] * 1000   # 千元 -> 元
+            return df.sort_values(['ts_code', 'date']).reset_index(drop=True)
+        except Exception as e:
+            self.logger.error(f"get_daily_batch {trade_date}: {e}")
+            self.last_error = str(e)
+            return None
+
+    def get_adj_factor_batch(self, trade_date: str) -> Optional[pd.DataFrame]:
+        """
+        按交易日拉取全市场复权因子（adj_factor 接口，约 0.14s/次）。
+
+        返回列: ts_code, date, adj_factor
+        """
+        if not self.is_connected:
+            if not self.connect():
+                return None
+        try:
+            df = self._call(self.pro.adj_factor, trade_date=trade_date)
+            if df is None or df.empty:
+                return None
+            df = df.rename(columns={'trade_date': 'date'})
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            return df.reset_index(drop=True)
+        except Exception as e:
+            self.logger.error(f"get_adj_factor_batch {trade_date}: {e}")
+            self.last_error = str(e)
+            return None
+
+    def get_daily_basic_batch(self, trade_date: str,
+                              fields: str = 'ts_code,trade_date,turnover_rate') -> Optional[pd.DataFrame]:
+        """
+        按交易日拉取全市场每日指标（daily_basic 接口，约 0.3s/次）。
+
+        默认只拉换手率，调用方可通过 fields 参数扩展。
+        返回列取决于 fields，date 列已格式化为 YYYY-MM-DD。
+        """
+        if not self.is_connected:
+            if not self.connect():
+                return None
+        try:
+            df = self._call(self.pro.daily_basic, trade_date=trade_date, fields=fields)
+            if df is None or df.empty:
+                return None
+            df = df.rename(columns={'trade_date': 'date'})
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            return df.reset_index(drop=True)
+        except Exception as e:
+            self.logger.error(f"get_daily_basic_batch {trade_date}: {e}")
+            self.last_error = str(e)
+            return None
+
+    def get_stock_name(self, code: str) -> Optional[str]:
+        """通过 pro.stock_basic() 获取股票名称"""
+        if not self.is_connected:
+            if not self.connect():
+                return None
+
+        try:
+            ts_code = self._convert_code(code)
+            df = self._call(self.pro.stock_basic,
+                            ts_code=ts_code,
+                            fields='ts_code,name')
+            if df is not None and not df.empty:
+                return df.iloc[0]['name']
+            return None
+        except Exception as e:
+            self.logger.debug(f"Tushare获取股票名称失败 {code}: {e}")
+            return None
+
+    def get_all_stock_names(self) -> Optional[Dict[str, str]]:
+        """获取全市场股票名称映射 {纯6位代码: 名称}，单次 API 调用"""
+        if not self.is_connected:
+            if not self.connect():
+                return None
+
+        try:
+            df = self._call(self.pro.stock_basic,
+                            exchange='',
+                            list_status='L',
+                            fields='ts_code,name')
+            if df is None or df.empty:
+                return None
+            return {row['ts_code'].split('.')[0]: row['name']
+                    for _, row in df.iterrows()}
+        except Exception as e:
+            self.logger.error(f"Tushare获取全市场股票名称失败: {e}")
             return None
