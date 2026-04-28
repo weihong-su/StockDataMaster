@@ -125,7 +125,7 @@ class BaostockAdapter(DataSourceAdapter):
 
         try:
             # 添加前缀
-            code = self._add_bs_prefix(code)
+            bs_code = self._add_bs_prefix(code)
 
             # 转换频率
             if freq not in self.FREQ_MAP:
@@ -146,18 +146,21 @@ class BaostockAdapter(DataSourceAdapter):
                 from datetime import datetime
                 end_date = datetime.now().strftime('%Y-%m-%d')
 
-            # 设置复权类型: 2=前复权
+            # 设置复权类型: 2=前复权, 1=后复权, 3=不复权
             adjustflag = '2' if adjust == 'qfq' else '1' if adjust == 'hfq' else '3'
 
-            # 定义字段（turn=换手率，仅日线有效；分钟线忽略该字段）
-            if bs_freq == 'd':
+            # 字段定义：
+            # - 日线/周线/月线：包含 turn(换手率)，无 time 字段
+            # - 分钟线：包含 time 字段，无 turn/preclose（baostock不支持）
+            is_daily_or_higher = bs_freq in ('d', 'w', 'm')
+            if is_daily_or_higher:
                 fields = "date,code,open,high,low,close,preclose,volume,amount,turn,adjustflag"
             else:
-                fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag"
+                fields = "date,time,code,open,high,low,close,volume,amount,adjustflag"
 
-            # 查询数据
-            result = bs.query_history_k_data_plus(
-                code,
+            # 使用官方推荐迭代模式获取数据（比 get_data() 更稳定）
+            rs = bs.query_history_k_data_plus(
+                bs_code,
                 fields,
                 start_date=start_date,
                 end_date=end_date,
@@ -165,24 +168,34 @@ class BaostockAdapter(DataSourceAdapter):
                 adjustflag=adjustflag
             )
 
-            if result.error_code != '0':
-                self.logger.error(f"Baostock查询失败 {code}: {result.error_msg}")
-                self.last_error = result.error_msg
+            if rs.error_code != '0':
+                self.logger.error(f"Baostock查询失败 {bs_code}: {rs.error_msg}")
+                self.last_error = rs.error_msg
                 self._consecutive_failures += 1
                 self._last_failure_time = time.time()
                 return None
 
-            # 转换为DataFrame
-            df = result.get_data()
-            if df.empty:
-                # 改为debug级别,避免重复警告
-                self.logger.debug(f"Baostock未获取到数据: {code}")
+            # 迭代收集数据（官方推荐模式）
+            data_list = []
+            while (rs.error_code == '0') and rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
+                self.logger.debug(f"Baostock未获取到数据: {bs_code}")
                 return None
 
-            # 数值类型转换
+            df = pd.DataFrame(data_list, columns=rs.fields)
+
+            # 分钟线：合并 date + time 为统一 date 列（格式 YYYY-MM-DD HH:MM:SS）
+            if not is_daily_or_higher and 'time' in df.columns:
+                df['date'] = df['date'] + ' ' + df['time'].str.strip()
+                df = df.drop(columns=['time'])
+
+            # 空字符串替换为 NaN，再做数值转换（baostock 停牌时 turn 为空字符串）
             numeric_cols = ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 'turn']
             for col in numeric_cols:
                 if col in df.columns:
+                    df[col] = df[col].replace('', None)
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
             # 如果指定了count,只取最近count条
@@ -226,7 +239,7 @@ class BaostockAdapter(DataSourceAdapter):
                 return None
 
         try:
-            code = self._add_bs_prefix(code)
+            bs_code = self._add_bs_prefix(code)
 
             # 默认结束日期为今天
             if not end_date:
@@ -238,9 +251,9 @@ class BaostockAdapter(DataSourceAdapter):
                 from datetime import datetime, timedelta
                 start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
-            # 查询估值数据
-            result = bs.query_history_k_data_plus(
-                code,
+            # 查询估值数据（迭代模式）
+            rs = bs.query_history_k_data_plus(
+                bs_code,
                 "date,code,peTTM,pbMRQ,psTTM,pcfNcfTTM",
                 start_date=start_date,
                 end_date=end_date,
@@ -248,14 +261,19 @@ class BaostockAdapter(DataSourceAdapter):
                 adjustflag="3"
             )
 
-            if result.error_code != '0':
-                self.logger.error(f"Baostock估值查询失败 {code}: {result.error_msg}")
+            if rs.error_code != '0':
+                self.logger.error(f"Baostock估值查询失败 {bs_code}: {rs.error_msg}")
                 return None
 
-            df = result.get_data()
-            if df.empty:
-                self.logger.warning(f"Baostock未获取到估值数据: {code}")
+            data_list = []
+            while (rs.error_code == '0') and rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
+                self.logger.warning(f"Baostock未获取到估值数据: {bs_code}")
                 return None
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
 
             # 重命名列
             df = df.rename(columns={

@@ -362,6 +362,8 @@ def mock_tushare():
         "status": "ok", "response_time": 0.5,
         "data_freshness": True, "error_message": None
     }
+    # 默认返回 None，避免在 get_stock_name 多级回退中短路到 baostock 之前被截断
+    m.get_stock_name.return_value = None
     return m
 
 
