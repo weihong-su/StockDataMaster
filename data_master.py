@@ -6,7 +6,6 @@ StockDataMaster主数据接口
 
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, Any
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -282,15 +281,16 @@ class StockDataMaster:
         adjust: str
     ):
         """
-        尝试缓存日K线数据(增量校验+并行三选二投票)
+        尝试缓存日K线数据(增量校验+串行短路校验)
 
         策略:
         1. 查询已验证缓存的日期集合
         2. 只对新增日期(未在缓存中)进行校验
-        3. 使用 validate_and_cache_voting 进行多源投票校验
-           - 多个校验源: 三选二投票(first-to-quorum)
-           - 单个校验源: 降级为双源校验
-           - 无校验源: 降级为直接缓存主数据
+        3. 串行短路校验(fast-first):
+           - 按响应速度排序校验源(xtquant快 → baostock慢)
+           - 逐个串行请求,第一个通过就短路返回
+           - 单个校验源: 双源校验
+           - 无校验源: 直接缓存主数据
 
         Args:
             code: 股票代码
@@ -355,71 +355,84 @@ class StockDataMaster:
                 incremental_start = start_date
                 incremental_end = end_date
 
-            # 并行请求所有校验源数据
-            active_validation_sources = {
-                name: self.adapters[name]
-                for name in validation_sources
+            # 🔥 串行短路校验: 按响应速度排序(xtquant快 → baostock慢)
+            # 优先级: xtquant(交易时段50ms) > baostock(2-3s)
+            speed_priority = {'xtquant': 1, 'baostock': 2, 'mootdx': 3}
+            validation_sources_sorted = sorted(
+                validation_sources,
+                key=lambda s: speed_priority.get(s, 99)
+            )
+
+            active_validation_sources = [
+                name for name in validation_sources_sorted
                 if self.adapters.get(name) and getattr(self.adapters[name], 'is_connected', False)
-            }
+            ]
             skipped = [s for s in validation_sources if s not in active_validation_sources]
             for s in skipped:
                 self.logger.debug(f"{s}适配器不可用,跳过")
 
-            def _fetch_one(vs_name, vs_adapter):
-                try:
-                    self.logger.debug(f"请求{vs_name}校验数据: {code} ({incremental_start} ~ {incremental_end})")
-                    vs_df = vs_adapter.get_kline(code, 'd', incremental_start, incremental_end, None, adjust)
-                    return vs_name, vs_df
-                except Exception as e:
-                    self.logger.warning(f"{vs_name}校验数据请求失败: {e}")
-                    return vs_name, None
-
-            validation_dfs = {}
-            n_workers = max(len(active_validation_sources), 1)
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                futures = {
-                    executor.submit(_fetch_one, name, adapter): name
-                    for name, adapter in active_validation_sources.items()
-                }
-                incremental_dates = set(cache_df['date'].astype(str))
-                for future in as_completed(futures):
-                    vs_name, vs_df = future.result()
-                    if vs_df is not None and not vs_df.empty:
-                        vs_dates = set(vs_df['date'].astype(str))
-                        overlap = len(vs_dates & incremental_dates)
-                        coverage = overlap / len(incremental_dates) if incremental_dates else 0
-                        if coverage < 0.3:
-                            self.logger.warning(
-                                f"{vs_name}数据覆盖率{coverage:.0%}"
-                                f"({overlap}/{len(incremental_dates)}条)不足30%，跳过校验"
-                            )
-                        else:
-                            validation_dfs[vs_name] = vs_df
-                            self.logger.debug(
-                                f"{vs_name}返回{len(vs_df)}条校验数据，覆盖率{coverage:.0%}"
-                            )
-                    else:
-                        self.logger.debug(f"{vs_name}未返回数据")
-
-            if not validation_dfs:
-                # 所有校验源请求失败,降级为直接缓存
-                self.logger.warning(f"{code}所有校验源请求失败,直接缓存主数据")
+            if not active_validation_sources:
+                # 所有校验源不可用,降级为直接缓存
+                self.logger.warning(f"{code}所有校验源不可用,直接缓存主数据")
                 self.cache_manager.save_to_cache(code, cache_df, primary_source, 'none', validated=False)
                 return
 
-            # 调用投票校验
-            self.logger.info(f"{code}执行投票校验: 主源={primary_source}, 校验源={list(validation_dfs.keys())}")
-            result = self.cache_manager.validate_and_cache_voting(
-                code=code,
-                primary_df=cache_df,
-                validation_dfs=validation_dfs,
-                primary_source=primary_source
-            )
+            incremental_dates = set(cache_df['date'].astype(str))
 
-            if result is not None:
-                self.logger.info(f"{code}投票校验通过,已缓存({len(result)}条)")
-            else:
-                self.logger.warning(f"{code}投票校验未通过,不进入缓存")
+            # 🔥 串行短路: 逐个请求,第一个通过就返回
+            for vs_name in active_validation_sources:
+                vs_adapter = self.adapters[vs_name]
+                try:
+                    import time
+                    start_time = time.time()
+                    self.logger.debug(f"请求{vs_name}校验数据: {code} ({incremental_start} ~ {incremental_end})")
+                    vs_df = vs_adapter.get_kline(code, 'd', incremental_start, incremental_end, None, adjust)
+                    elapsed = time.time() - start_time
+
+                    if vs_df is None or vs_df.empty:
+                        self.logger.debug(f"{vs_name}未返回数据,尝试下一个校验源")
+                        continue
+
+                    # 检查覆盖率
+                    vs_dates = set(vs_df['date'].astype(str))
+                    overlap = len(vs_dates & incremental_dates)
+                    coverage = overlap / len(incremental_dates) if incremental_dates else 0
+
+                    if coverage < 0.3:
+                        self.logger.warning(
+                            f"{vs_name}数据覆盖率{coverage:.0%}"
+                            f"({overlap}/{len(incremental_dates)}条)不足30%，尝试下一个校验源"
+                        )
+                        continue
+
+                    self.logger.debug(
+                        f"{vs_name}返回{len(vs_df)}条校验数据，覆盖率{coverage:.0%}，耗时{elapsed:.2f}s"
+                    )
+
+                    # 🔥 单源校验: 计算通过率
+                    pass_rate = self.cache_manager._calculate_pass_rate(cache_df, vs_df, code)
+
+                    if pass_rate >= self.cache_manager.min_pass_rate:
+                        # 🔥 短路成功: 第一个通过就直接缓存并返回
+                        validated_df = cache_df.copy()
+                        self.cache_manager.save_to_cache(
+                            code, validated_df, primary_source, vs_name, validated=True
+                        )
+                        self.logger.info(
+                            f"{code}串行短路校验通过: {vs_name} (通过率={pass_rate*100:.1f}%, 耗时{elapsed:.2f}s)"
+                        )
+                        return  # 短路返回,不再请求后续校验源
+                    else:
+                        self.logger.debug(
+                            f"{code} {vs_name}校验未通过(通过率={pass_rate*100:.1f}%), 尝试下一个校验源"
+                        )
+
+                except Exception as e:
+                    self.logger.warning(f"{vs_name}校验数据请求失败: {e}, 尝试下一个校验源")
+                    continue
+
+            # 所有校验源都未通过
+            self.logger.warning(f"{code}所有校验源均未通过,不进入缓存")
 
         except Exception as e:
             self.logger.error(f"缓存数据失败 {code}: {e}")
@@ -969,9 +982,9 @@ class StockDataMaster:
         获取股票名称 - 四级查找链
 
         L1: 内存缓存 dict
-        L2: xtquant.get_stock_name()
-        L3: tushare pro.stock_basic()
-        L4: baostock query_stock_basic()
+        L2: baostock query_stock_basic() (免费兜底，数据最全含退市股)
+        L3: xtquant.get_stock_name() (QMT用户快速查询)
+        L4: tushare pro.stock_basic() (付费用户补充)
 
         Args:
             code: 股票代码，支持 '600519', 'sh.600519', '600519.SH' 格式
@@ -990,28 +1003,28 @@ class StockDataMaster:
             self.logger.debug(f"L1缓存命中: {pure_code} -> {self._stock_name_cache[pure_code]}")
             return self._stock_name_cache[pure_code]
 
-        # L2: xtquant
-        name = self._get_stock_name_from_xtquant(pure_code)
-        if name:
-            self._stock_name_cache[pure_code] = name
-            self.cache_manager.cache_stock_name(pure_code, name, 'xtquant')
-            self.logger.info(f"L2 xtquant获取股票名称: {pure_code} -> {name}")
-            return name
-
-        # L3: tushare
-        name = self._get_stock_name_from_tushare(pure_code)
-        if name:
-            self._stock_name_cache[pure_code] = name
-            self.cache_manager.cache_stock_name(pure_code, name, 'tushare')
-            self.logger.info(f"L3 tushare获取股票名称: {pure_code} -> {name}")
-            return name
-
-        # L4: baostock
+        # L2: baostock (免费无门槛，数据最全含退市股)
         name = self._get_stock_name_from_baostock(pure_code)
         if name:
             self._stock_name_cache[pure_code] = name
             self.cache_manager.cache_stock_name(pure_code, name, 'baostock')
-            self.logger.info(f"L4 baostock获取股票名称: {pure_code} -> {name}")
+            self.logger.info(f"L2 baostock获取股票名称: {pure_code} -> {name}")
+            return name
+
+        # L3: xtquant (QMT用户快速查询)
+        name = self._get_stock_name_from_xtquant(pure_code)
+        if name:
+            self._stock_name_cache[pure_code] = name
+            self.cache_manager.cache_stock_name(pure_code, name, 'xtquant')
+            self.logger.info(f"L3 xtquant获取股票名称: {pure_code} -> {name}")
+            return name
+
+        # L4: tushare (付费用户补充)
+        name = self._get_stock_name_from_tushare(pure_code)
+        if name:
+            self._stock_name_cache[pure_code] = name
+            self.cache_manager.cache_stock_name(pure_code, name, 'tushare')
+            self.logger.info(f"L4 tushare获取股票名称: {pure_code} -> {name}")
             return name
 
         # 所有级别失败，返回代码本身
