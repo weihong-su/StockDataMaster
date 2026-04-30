@@ -3,8 +3,11 @@
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production-brightgreen.svg)]()
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://su-m10.github.io/StockDataMaster/)
 
 专业的股票数据主数据接口系统，通过多数据源集成、智能缓存和健康检测，为量化交易和数据分析提供高可用、高性能的数据服务。
+
+📚 **[完整文档](https://su-m10.github.io/StockDataMaster/)** | 🚀 **[快速开始](https://su-m10.github.io/StockDataMaster/quick-start)** | 📖 **[API 参考](https://su-m10.github.io/StockDataMaster/api-reference)**
 
 ---
 

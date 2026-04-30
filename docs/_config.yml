@@ -1,0 +1,50 @@
+theme: jekyll-theme-cayman
+title: StockDataMaster
+description: 专业的股票数据主数据接口系统 - 多数据源集成、智能缓存、健康检测
+show_downloads: true
+
+# GitHub 仓库信息
+github:
+  repository_url: https://github.com/Su-M10/StockDataMaster
+  is_project_page: true
+
+# 导航菜单
+navigation:
+  - title: 快速开始
+    url: /quick-start
+  - title: API 参考
+    url: /api-reference
+  - title: 架构设计
+    url: /architecture
+  - title: 常见问题
+    url: /faq
+
+# 插件
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+  - jekyll-titles-from-headings
+
+# Markdown 配置
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# 相对链接配置
+relative_links:
+  enabled: true
+  collections: true
+
+# 标题配置
+titles_from_headings:
+  enabled: true
+  strip_title: true
+  collections: true
+
+# 排除文件
+exclude:
+  - superpowers/
+  - "*.log"
+  - "*.tmp"
