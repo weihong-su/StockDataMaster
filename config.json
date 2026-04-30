@@ -102,7 +102,7 @@
   "cache": {
     "enabled": true,
     "db_path": "cache/kline_cache.db",
-    "max_days_per_stock": 120,
+    "max_days_per_stock": 520,
     "update_time": "15:30",
     "stock_name_expire_days": 30,
     "stock_name_cleanup_day": 5,
