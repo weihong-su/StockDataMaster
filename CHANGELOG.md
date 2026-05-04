@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-04-30
+
+### Added
+- **串行短路校验机制**：校验源按响应速度排序（xtquant ~50ms 优先），第一个通过即短路，省去等待慢源（baostock 2-3s）。
+- **roles 配置格式**：每个数据源通过 `roles` 字段声明承担的角色及优先级，替代旧的 `use_for` 列表，支持 `time_slot` 过滤（仅交易时段/盘后生效）。
+- **股票名称四级查找链**：内存（< 0.01ms）→ Baostock（免费，含退市）→ xtquant（QMT 用户快查）→ Tushare（付费补充），完整覆盖各类账户场景。
+- **`warmup_stock_names()` 接口**：从 Tushare 批量预热股票名称缓存，返回写入记录数，适合启动阶段初始化。
+
+### Changed
+- **缓存上限 120 → 520 天**（`cache.max_days_per_stock`）：支持更长回测周期，与 A 股典型缓存需求对齐。
+- **xtquant 升为分钟K线首选**（`roles.kline_minute: priority 1`）：QMT 用户盘中分钟数据直接使用 xtquant，延迟更低。
+- **校验源优先级调整**：Baostock 为全时段校验首选（priority 1），xtquant 作为交易时段补充（priority 2，`time_slot: trading`）。
+- **数据源鲁棒性增强**：各适配器 fallback 链顺序重新梳理，任意单源故障不影响业务可用性。
+
+### Fixed
+- **Baostock 升级到 0.9.1**：服务器地址从 `www.baostock.com` 迁移至 `public-api.baostock.com`，彻底解决 TCP 10030 连接失败问题。
+
+---
+
 ## [1.1.1] - 2026-03-04
 
 ### Fixed
@@ -74,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/your-org/StockDataMaster/compare/v1.1.1...HEAD
-[1.1.1]: https://github.com/your-org/StockDataMaster/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/your-org/StockDataMaster/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/your-org/StockDataMaster/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Su-M10/StockDataMaster/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Su-M10/StockDataMaster/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/Su-M10/StockDataMaster/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/Su-M10/StockDataMaster/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/Su-M10/StockDataMaster/releases/tag/v1.0.0

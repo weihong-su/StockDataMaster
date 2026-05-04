@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>StockDataMaster 文档</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="StockDataMaster 专业股票数据接口系统文档">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
+  <style>
+    :root {
+      --theme-color: #2f81f7;
+      --sidebar-width: 280px;
+    }
+    .sidebar-toggle { color: var(--theme-color); }
+    .app-name-link { font-weight: bold; }
+    nav.app-nav { display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">加载中...</div>
+  <script>
+    window.$docsify = {
+      name: 'StockDataMaster',
+      repo: 'https://github.com/Su-M10/StockDataMaster',
+      homepage: 'index.md',
+      loadSidebar: true,
+      subMaxLevel: 3,
+      auto2top: true,
+      search: {
+        maxAge: 86400000,
+        paths: [
+          '/',
+          '/quick-start',
+          '/api-reference',
+          '/architecture',
+          '/faq',
+          '/%E6%8E%A5%E5%8F%A3%E8%B0%83%E7%94%A8%E8%A7%84%E8%8C%83%E4%B8%8E%E6%9C%80%E4%BD%B3%E5%AE%9E%E8%B7%B5',
+        ],
+        placeholder: '搜索文档...',
+        noData: '没有找到结果',
+        depth: 4,
+      },
+      alias: {
+        '/.*/_sidebar.md': '/_sidebar.md',
+      },
+      copyCode: {
+        buttonText: '复制',
+        errorText: '错误',
+        successText: '已复制',
+      },
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@2/dist/docsify-copy-code.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+</body>
+</html>

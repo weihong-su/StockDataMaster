@@ -19,12 +19,12 @@ StockDataMaster 系统架构设计详解
     ↓
 StockDataMaster（单例入口）
     ├─ HealthManager（健康检测与热切换）
-    ├─ CacheManager（智能缓存）
+    ├─ CacheManager（智能缓存 + 双源校验）
     └─ AdapterFactory
-        ├─ TushareAdapter（日K线主数据源）
-        ├─ MootdxAdapter（分钟K线主数据源）
-        ├─ BaostockAdapter（备用数据源）
-        └─ XtquantAdapter（实时Tick数据源）
+        ├─ TushareAdapter   —— 日K线主数据源
+        ├─ BaostockAdapter  —— 校验首选 / 股票名称 / 备用K线
+        ├─ MootdxAdapter    —— 应急备用（TCP，速度快）
+        └─ XtquantAdapter   —— 实时Tick + 分钟K线首选（需QMT）
 ```
 
 ---
@@ -33,13 +33,13 @@ StockDataMaster（单例入口）
 
 ### 为什么使用适配器模式？
 
-- 每个数据源API差异巨大（Tushare用token，Mootdx用TCP，Baostock需登录）
-- 适配器统一接口：`get_kline()`, `get_valuation()`, `get_tick()`
+- 每个数据源 API 差异巨大（Tushare 用 token，Mootdx 用 TCP，Baostock 需登录）
+- 适配器统一接口：`get_kline()`、`get_valuation()`、`get_tick()`
 - 易于扩展新数据源（仅需继承 `DataSourceAdapter`）
 
 ### 为什么使用单例模式？
 
-- 避免重复连接数据源（TCP连接、登录认证）
+- 避免重复连接数据源（TCP 连接、登录认证）
 - 全局共享缓存和健康状态
 - 后台健康检测线程唯一性
 
@@ -55,176 +55,194 @@ StockDataMaster（单例入口）
 
 ### 1. 主接口模块（data_master.py）
 
-**职责**：
-- 单例入口，协调各模块
-- 智能缓存判断
-- 数据源切换
+**职责**：单例入口，协调各模块，智能缓存判断，数据源切换。
 
-**核心方法**：
-```python
-class StockDataMaster:
-    def get_kline(...)      # K线数据接口
-    def get_valuation(...)  # 估值数据接口
-    def get_tick(...)       # 实时Tick接口
-    def _is_cache_fresh(...) # 缓存新鲜度判断（核心逻辑）
-```
+**公开方法**：
+
+| 方法 | 说明 |
+|------|------|
+| `get_kline()` | K线数据（日线 + 分钟线） |
+| `get_valuation()` | 估值数据（PE/PB 等） |
+| `get_tick()` | 实时 Tick |
+| `get_stock_name()` | 股票名称（四级查找链） |
+| `warmup_stock_names()` | 批量预热股票名称缓存 |
+| `get_health_status()` | 系统健康报告 |
+| `get_cache_statistics()` | 缓存统计 |
+| `cleanup_cache()` | 清理旧缓存 |
+| `force_switch_source()` | 强制切换指定角色的数据源 |
+| `close()` | 释放所有资源 |
 
 ### 2. 适配器基类（base_adapter.py）
 
-**职责**：
-- 定义统一接口
-- 健康检查
-- 代码标准化
+**职责**：定义统一接口，健康检查，代码标准化。
 
-**核心方法**：
 ```python
 class DataSourceAdapter:
     def connect() -> bool
-    def get_kline(...)
-    def get_valuation(...)
-    def get_tick(...)
-    def health_check() -> Dict[str, Any]
+    def disconnect()
+    def get_kline(...) -> DataFrame
+    def get_valuation(...) -> DataFrame
+    def get_tick(...) -> Dict
+    def health_check() -> Dict
+    def normalize_code(code) -> str    # 去除前缀 → '600519'
+    def add_prefix(code) -> str        # 添加前缀 → 'sh.600519'
+    def standardize_dataframe(df)      # 标准化列名
 ```
 
 ### 3. 缓存管理（cache_manager.py）
 
-**职责**：
-- SQLite缓存
-- 双源校验
-- 盘中/盘后策略
+**职责**：SQLite 缓存，双源校验，增量写入，股票名称持久化。
 
-**核心功能**：
-- 缓存写入：盘中跳过当日，盘后缓存收盘数据
-- 缓存读取：三层智能判断
-- 数据校验：价格±0.01元，成交量±5%
+**核心参数**（来自 `config.json`）：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `cache.max_days_per_stock` | 520 | 单只股票最大缓存天数 |
+| `cache.validation.price_tolerance_abs` | 0.01 | 价格绝对容差（元） |
+| `cache.validation.price_tolerance_pct` | 0.005 | 价格相对容差（0.5%） |
+| `cache.validation.volume_tolerance_pct` | 0.05 | 成交量容差（5%） |
+| `cache.validation.min_pass_rate` | 0.8 | 最低通过率（80%） |
 
 ### 4. 健康管理（health_manager.py）
 
-**职责**：
-- 后台检测
-- 热切换
-- 后台线程
+**职责**：后台检测，热切换，时段感知恢复。
 
-**核心机制**：
-- 60秒间隔健康检测
-- 连续失败≥3次触发切换
-- 响应时间>5秒触发切换
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `health_check.interval_seconds` | 60 | 检查间隔 |
+| `health_check.response_time_threshold` | 5.0 | 响应超时阈值（秒） |
+| `health_check.consecutive_failures_threshold` | 3 | 触发切换的连续失败次数 |
 
 ---
 
 ## 核心创新
 
-### 1. 智能三层缓存判断
+### 1. 智能三层缓存判断（_is_cache_fresh）
 
 ```
-用户请求 get_kline(code, start_date, end_date, count)
+用户请求 get_kline(code, end_date, count)
     ↓
-从缓存获取数据
-    ↓
-调用 _is_cache_fresh(cached_df, end_date)
-    ↓
-[优先级1] end_date < 今天？
+[1] end_date < 今天？
     YES → 返回 True（历史数据永不变）
-    NO  → 继续
     ↓
-[优先级2] 缓存最新日期 == 今天？
-    YES → 当前时间 >= 15:00？
-        YES → 返回 True（盘后数据已固定）
-        NO  → 返回 False（盘中数据动态变化）
-    NO  → 继续
+[2] 缓存最新日期 == 今天？
+    盘中（< 15:00）→ 返回 False（重新获取）
+    盘后（≥ 15:00）→ 返回 True（收盘已固定）
     ↓
-[优先级3] 缓存最新日期 == 最新交易日？
-    YES → 返回 True（周末/节假日使用最新交易日）
+[3] 缓存最新日期 == 最新交易日？
+    YES → 返回 True（周末/节假日使用最新交易日缓存）
     NO  → 返回 False（缓存过期）
 ```
 
-**核心价值**：
-- 历史数据永不过期（提高缓存命中率）
-- 盘中保证实时性（不缓存当日数据）
-- 盘后自动缓存（性能和准确性兼顾）
+### 2. 串行短路校验
 
-### 2. 盘中/盘后自适应
+双源校验按响应速度排序，第一个通过即短路，避免等待慢速数据源：
 
-**缓存写入策略**：
-
-```python
-# 盘中时段（< 15:00）跳过当日数据
-market_close_time = time(15, 0)
-can_cache_today = now.time() >= market_close_time
-
-if row_date == today_str and not can_cache_today:
-    continue  # 不缓存盘中当日数据
+```
+需要校验新数据 D 条
+    ↓
+[1] xtquant（~50ms，仅交易时段）
+    通过 → 立即缓存，结束校验
+    ↓
+[2] baostock（~2-3s，全时段兜底）
+    通过 → 缓存
+    失败 → 不缓存（数据可疑）
 ```
 
-**实际效果**：
+**关键配置**（`config.json` `validation` 节）：
 
-| 场景 | 时间 | 请求 | 缓存行为 |
-|------|------|------|---------|
-| 历史数据分析 | 任意 | end_date='2025-10-24' | ✅ 使用缓存 |
-| 盘中监控 | 10:30 | count=120 | ❌ 不缓存当日 |
-| 盘后查询 | 15:30 | count=120 | ✅ 缓存当日 |
-| 周末查询 | 周六 | count=120 | ✅ 使用缓存 |
+```json
+{
+  "validation": {
+    "sources": ["xtquant", "baostock"],
+    "strategy": "fast_first",
+    "comment": "串行短路: xtquant(快)优先, 通过即短路"
+  }
+}
+```
 
-### 3. 双源校验机制
+### 3. roles 配置格式
 
-**目的**: 确保缓存数据准确性，只缓存校验通过的数据
+每个数据源通过 `roles` 字段声明承担的角色及优先级，支持 `time_slot` 过滤：
 
-**流程**:
-1. 主数据源（Tushare）获取数据
-2. 校验数据源（Mootdx或Baostock）获取相同数据
-3. 逐条比对价格和成交量，容差标准：
-   - 价格：±0.01元 或 ±0.5%
-   - 成交量：±5%
-4. 只有通过校验的数据才进入缓存（validated=1）
-5. 校验通过率 ≥ 80% 才缓存成功
+```json
+{
+  "data_sources": {
+    "baostock": {
+      "roles": {
+        "kline_day":   { "priority": 2 },
+        "validation":  { "priority": 1 },
+        "stock_name":  { "priority": 1 }
+      }
+    },
+    "xtquant": {
+      "roles": {
+        "tick":         { "priority": 1 },
+        "kline_minute": { "priority": 1 },
+        "validation":   { "priority": 2, "time_slot": "trading" }
+      }
+    }
+  }
+}
+```
 
-**代码示例**:
+`time_slot` 可选值：`"trading"`（9:15-15:00）、`"after_hours"`（其他），不指定则全时段生效。
+
+### 4. 股票名称四级查找链
 
 ```python
-# 执行双源校验
-validated_df = self.cache_manager.validate_and_cache(
-    code, df_tushare, df_mootdx, 'tushare', 'mootdx'
-)
+get_stock_name('600519')
+    L1: 内存 dict         (< 0.01ms, 不持久)
+    L2: SQLite 缓存       (~0.5ms,  持久化，30天过期)
+    L3: Baostock 查询     (~0.8ms,  含退市股，免费)
+    L4: xtquant / Tushare (~50ms+, 付费用户补充)
+```
 
-# 计算通过率
-pass_rate = len(validated_df) / expected_count
-if pass_rate >= 0.8:
-    # 缓存成功
-    self.logger.info(f"校验通过率: {pass_rate*100:.1f}%")
+L1 相比 L3 加速约 **700 倍**，SQLite 持久化几乎无性能损失。
+
+### 5. 盘中/盘后自适应写入
+
+```python
+# 盘中（< 15:00）跳过当日数据，避免缓存不完整的盘中 K 线
+if row_date == today and now.time() < market_close_time:
+    continue  # 不缓存
+
+# 盘后（≥ 15:00）正常写入，收盘价已固定
 ```
 
 ---
 
 ## 配置驱动设计
 
-### 核心配置项
+### 最小配置示例
 
 ```json
 {
   "data_sources": {
     "tushare": {
       "enabled": true,
-      "priority": 1,
-      "timeout": 10,
-      "retry_times": 2,
       "token": "your_token",
-      "use_for": ["kline_day"]
+      "roles": {
+        "kline_day": { "priority": 1 },
+        "valuation":  { "priority": 1 }
+      }
+    },
+    "baostock": {
+      "enabled": true,
+      "roles": {
+        "kline_day":  { "priority": 2 },
+        "validation": { "priority": 1 },
+        "stock_name": { "priority": 1 }
+      }
     }
   },
   "cache": {
     "enabled": true,
-    "max_days_per_stock": 120,
-    "validation": {
-      "price_tolerance_abs": 0.01,
-      "price_tolerance_pct": 0.005,
-      "volume_tolerance_pct": 0.05
-    }
+    "max_days_per_stock": 520
   },
   "health_check": {
     "enabled": true,
-    "interval_seconds": 60,
-    "response_time_threshold": 5.0,
-    "consecutive_failures_threshold": 3
+    "interval_seconds": 60
   }
 }
 ```
@@ -232,44 +250,37 @@ if pass_rate >= 0.8:
 ### 配置读取
 
 ```python
-# 支持点号分隔的嵌套键
-cache_max_days = config.get('cache.max_days_per_stock', 120)
+# 支持点号分隔的嵌套键，第二参数为默认值
+cache_max = config.get('cache.max_days_per_stock', 520)
 
-# 按用途获取数据源
-sources = config.get_sources_by_usage('kline_day')
-# → ['tushare', 'mootdx', 'baostock'] (按优先级排序)
+# 按角色获取数据源（已按 priority 排序）
+sources = config.get_sources_by_role('kline_day')
+# → ['tushare', 'baostock', 'mootdx', 'xtquant']
 ```
 
 ---
 
 ## 数据流
 
-### K线数据请求流程
+### K线数据请求流程（日线）
 
 ```
-用户请求 get_kline(code, freq, count)
+用户请求 get_kline(code, freq='d', count)
     ↓
-[1] 检查频率是否为日线？
-    NO → 直接从数据源获取（分钟线不缓存）
-    YES → 继续
-    ↓
-[2] 检查缓存是否启用？
+[1] 缓存启用 且 use_cache=True？
     NO → 直接从数据源获取
-    YES → 继续
     ↓
-[3] 从缓存获取数据
-    ↓
-[4] 检查缓存是否新鲜且充足？
+[2] 缓存是否新鲜且覆盖请求范围？
     YES → 返回缓存数据 ✅
-    NO  → 继续
     ↓
-[5] 从数据源获取数据
+[3] 按 kline_day roles 优先级逐源请求
+    tushare(P1) → baostock(P2) → mootdx(P3)
     ↓
-[6] 双源校验
+[4] 串行短路校验（xtquant/baostock）
     ↓
-[7] 写入缓存（如果盘后时段）
+[5] 盘后时段 → 写入缓存（增量，跳过今日盘中）
     ↓
-[8] 返回数据
+[6] 返回数据
 ```
 
 ---
@@ -278,45 +289,24 @@ sources = config.get_sources_by_usage('kline_day')
 
 ### 添加新数据源
 
-1. **创建适配器** (`adapters/newsource_adapter.py`)
-2. **注册适配器** (`adapters/__init__.py`)
-3. **添加配置** (`config.json`)
-4. **编写测试**
+1. 创建 `adapters/newsource_adapter.py`，继承 `DataSourceAdapter`
+2. 实现：`connect()`、`disconnect()`、`get_kline()`、`get_valuation()`、`get_tick()`
+3. 注册到 `adapters/__init__.py` 的 `AdapterFactory.ADAPTER_MAP`
+4. 在 `config.json` 的 `data_sources` 下添加配置，设置 `roles`
 
-详见：[CLAUDE.md - 常见任务](../CLAUDE.md#添加新数据源)
-
----
-
-## 性能优化
-
-### 缓存预取
-
-**问题**: 用户请求120条，缓存也是120条，后续请求121条会miss缓存
-
-**解决方案**: 实际请求时多获取10%数据
-
-```python
-# 用户请求120条，实际获取132条
-actual_count = int(count * 1.1)  # +10%
-
-df = adapter.get_kline(code, freq, start_date, end_date, actual_count, adjust)
-
-# 返回用户需要的120条
-return_df = df.tail(count).copy()
-
-# 完整数据（132条）保存在attrs中供缓存使用
-return_df.attrs['full_data'] = df
-```
-
-**效果**: 提高后续请求缓存命中率
+K线返回格式：列 `date, open, high, low, close, volume, amount`；date 为 `'YYYY-MM-DD'` 字符串；所有价格前复权。
 
 ---
 
-## 更多细节
+## 性能指标
 
-- [完整架构文档](../CLAUDE.md#架构总览)
-- [核心架构模式](../CLAUDE.md#核心架构模式)
+| 指标 | 数值 |
+|------|------|
+| 热缓存响应时间 | ~3ms |
+| 冷启动响应时间 | ~120ms |
+| 缓存加速比 | 40x+ |
+| L1 股票名称查询 | < 0.01ms |
+| 并发 QPS（10线程） | 300+ |
+| 缓存容量/股票 | 520 天 |
 
----
-
-**Happy Trading! 📈**
+详细测试数据参见：[性能深度分析报告](StockDataMaster性能深度分析报告.md)
