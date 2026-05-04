@@ -27,3 +27,11 @@ __pycache__/
 !README.md
 !install_libs.py
 !.gitignore
+
+# xtquant 运行时依赖（需提交）
+!xtquant/libeay32.dll
+!xtquant/log4cxx.dll
+!xtquant/msvcp140.dll
+!xtquant/ssleay32.dll
+!xtquant/vcruntime140.dll
+!xtquant/xtdata.ini
