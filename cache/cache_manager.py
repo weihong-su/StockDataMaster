@@ -14,6 +14,15 @@ from datetime import datetime, timedelta, time
 import threading
 
 
+# validated=1 且具备真实第二数据源（不是 NULL/''/'none'）才算双源校验通过。
+# 仅 validated=1 但 source2 为空/none 的行被视为"未通过双源校验"——历史上 xtquant
+# 单源缓存与某些早期路径会落入这种状态，下次读取需当作未命中。
+_DUAL_SOURCE_VALIDATED_SQL = (
+    "validated=1 "
+    "AND source2 IS NOT NULL AND source2<>'' AND source2<>'none'"
+)
+
+
 class CacheManager:
     """缓存管理器"""
 
@@ -172,8 +181,13 @@ class CacheManager:
             with self.lock:
                 conn = sqlite3.connect(self.db_path)
 
-                # 构建查询
-                query = "SELECT date,open,high,low,close,volume,amount,turn FROM kline_cache WHERE code=? AND validated=1"
+                # 构建查询：仅返回经过双源校验的行
+                # validated=1 但 source2='none' 的"伪双源"数据视为未命中
+                query = (
+                    "SELECT date,open,high,low,close,volume,amount,turn "
+                    "FROM kline_cache WHERE code=? AND "
+                    + _DUAL_SOURCE_VALIDATED_SQL
+                )
                 params = [code]
 
                 if start_date:
@@ -502,7 +516,8 @@ class CacheManager:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT date FROM kline_cache WHERE code=? AND validated=1",
+                    "SELECT date FROM kline_cache WHERE code=? AND "
+                    + _DUAL_SOURCE_VALIDATED_SQL,
                     (code,)
                 )
                 dates = {row[0] for row in cursor.fetchall()}
@@ -563,9 +578,22 @@ class CacheManager:
             cursor.execute('SELECT COUNT(*) FROM kline_cache')
             total_count = cursor.fetchone()[0]
 
-            # 已校验记录数
-            cursor.execute('SELECT COUNT(*) FROM kline_cache WHERE validated=1')
-            validated_count = cursor.fetchone()[0]
+            # 已通过双源校验的行（与 get_cached_kline 读取标准对齐）
+            cursor.execute(
+                'SELECT COUNT(*) FROM kline_cache WHERE ' + _DUAL_SOURCE_VALIDATED_SQL
+            )
+            dual_source_count = cursor.fetchone()[0]
+
+            # 单源缓存：validated=1 但 source2 缺失（历史脏数据或 xtquant 单源），
+            # 与 validated=0 的真"待校验"分开统计，方便监控清洗效果
+            cursor.execute(
+                "SELECT COUNT(*) FROM kline_cache WHERE validated=1 "
+                "AND (source2 IS NULL OR source2='' OR source2='none')"
+            )
+            single_source_count = cursor.fetchone()[0]
+
+            cursor.execute('SELECT COUNT(*) FROM kline_cache WHERE validated=0')
+            unvalidated_count = cursor.fetchone()[0]
 
             # 股票数量
             cursor.execute('SELECT COUNT(DISTINCT code) FROM kline_cache')
@@ -583,7 +611,11 @@ class CacheManager:
             return {
                 'enabled': True,
                 'total_records': total_count,
-                'validated_records': validated_count,
+                # 保留旧字段名向后兼容，但语义已收紧为"双源校验通过的行数"
+                'validated_records': dual_source_count,
+                'dual_source_records': dual_source_count,
+                'single_source_records': single_source_count,
+                'unvalidated_records': unvalidated_count,
                 'stock_count': stock_count,
                 'date_range': {
                     'start': date_range[0],

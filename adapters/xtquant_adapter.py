@@ -559,16 +559,19 @@ class XtquantAdapter(DataSourceAdapter):
                     return None
 
                 # 步骤8: 成功后保存到缓存
+                # 注意：xtquant 单源不再自动标 validated=1。读取端 (CacheManager.get_cached_kline)
+                # 已收紧为"必须 validated=1 且 source2 不是 none/null/'' "，否则不命中。
+                # 单源缓存仅作为"占位"，等待 warmup 阶段做真正的双源升级。
                 if self.cache_enabled and self.cache_manager and freq == 'd':
                     try:
                         self.cache_manager.save_to_cache(
                             code=code,
                             df=result_df,
                             source1='xtquant',
-                            source2=None,  # xtquant是单一数据源,无需双源校验
-                            validated=True  # xtquant数据权威性高,直接标记为已校验
+                            source2=None,
+                            validated=False
                         )
-                        self.logger.debug(f"xtquant数据已保存到缓存: {code} ({freq})")
+                        self.logger.debug(f"xtquant数据已保存到缓存(单源待校验): {code} ({freq})")
                     except Exception as cache_error:
                         # 缓存失败不影响数据返回
                         self.logger.warning(f"缓存保存失败: {cache_error}")

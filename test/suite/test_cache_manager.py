@@ -105,7 +105,7 @@ def test_cache_date_ascending_order(temp_cache_config):
     from StockDataMaster.cache.cache_manager import CacheManager
     cm = CacheManager(temp_cache_config, {})
     df = make_sample_df(days=5, start_days_ago=10)
-    cm.save_to_cache("600520", df, "tushare", None, validated=True)
+    cm.save_to_cache("600520", df, "tushare", "mootdx", validated=True)
     cached = cm.get_cached_kline("600520")
     dates = cached['date'].tolist()
     assert dates == sorted(dates), "日期应按升序排列"
@@ -171,7 +171,7 @@ def test_cleanup_old_cache(temp_cache_config):
         'open': 100.0, 'high': 105.0, 'low': 98.0,
         'close': 102.0, 'volume': 1_000_000.0, 'amount': 102_000_000.0
     }])
-    cm.save_to_cache("600524", old_df, "tushare", None, validated=True)
+    cm.save_to_cache("600524", old_df, "tushare", "mootdx", validated=True)
     cm.cleanup_old_cache(days=120)
     assert cm.get_cached_kline("600524") is None
 
@@ -183,11 +183,16 @@ def test_get_cache_statistics(temp_cache_config):
     from StockDataMaster.cache.cache_manager import CacheManager
     cm = CacheManager(temp_cache_config, {})
     df = make_sample_df(days=5, start_days_ago=10)
-    cm.save_to_cache("600525", df, "tushare", None, validated=True)
+    cm.save_to_cache("600525", df, "tushare", "mootdx", validated=True)
     stats = cm.get_cache_statistics()
     assert stats['enabled'] is True
     assert stats['total_records'] >= 5
     assert stats['stock_count'] >= 1
+    # 双源 vs 单源 vs 未校验 分桶在统计中都应存在
+    assert 'dual_source_records' in stats
+    assert 'single_source_records' in stats
+    assert 'unvalidated_records' in stats
+    assert stats['dual_source_records'] >= 5
 
 
 def test_cache_statistics_empty(temp_cache_config):
@@ -263,7 +268,7 @@ def test_cache_disabled(tmp_path):
     assert cm.enabled is False
     assert cm.get_cached_kline("600519") is None
     df = make_sample_df()
-    assert cm.save_to_cache("600519", df, "tushare", None, validated=True) is False
+    assert cm.save_to_cache("600519", df, "tushare", "mootdx", validated=True) is False
 
 
 # ─── 测试：并发 ───────────────────────────────────────────────────────────────
@@ -281,7 +286,7 @@ def test_concurrent_cache_access(temp_cache_config):
                 'open': 100.0, 'high': 105.0, 'low': 98.0,
                 'close': 102.0, 'volume': 1_000_000.0, 'amount': 102_000_000.0
             }])
-            cm.save_to_cache(code, df, "tushare", None, validated=True)
+            cm.save_to_cache(code, df, "tushare", "mootdx", validated=True)
         except Exception as e:
             errors.append(str(e))
 
@@ -308,9 +313,73 @@ def test_historical_data_can_be_cached(temp_cache_config):
         'date': hist_date, 'open': 100.0, 'high': 105.0, 'low': 98.0,
         'close': 102.0, 'volume': 1_000_000.0, 'amount': 102_000_000.0
     }])
-    assert cm.save_to_cache("600530", df, "tushare", None, validated=True)
+    assert cm.save_to_cache("600530", df, "tushare", "mootdx", validated=True)
     cached = cm.get_cached_kline("600530")
     assert cached is not None
+
+
+# ─── 测试：双源严格读取（防止伪双源被命中） ─────────────────────────────────────
+
+def test_get_cached_kline_rejects_pseudo_validated_with_source2_none(temp_cache_config):
+    """validated=1 但 source2='none' 的"伪双源"行不应被 get_cached_kline 命中。"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    df = make_sample_df(days=3, start_days_ago=10)
+    cm.save_to_cache("600540", df, "tushare", "none", validated=True)
+    assert cm.get_cached_kline("600540") is None
+
+
+def test_get_cached_kline_rejects_pseudo_validated_with_source2_null(temp_cache_config):
+    """validated=1 且 source2 为 NULL 的"伪双源"行不应被 get_cached_kline 命中。"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    df = make_sample_df(days=3, start_days_ago=10)
+    cm.save_to_cache("600541", df, "tushare", None, validated=True)
+    assert cm.get_cached_kline("600541") is None
+
+
+def test_get_cached_kline_accepts_real_dual_source(temp_cache_config):
+    """validated=1 且 source2 为真实数据源时正常命中。"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    df = make_sample_df(days=3, start_days_ago=10)
+    cm.save_to_cache("600542", df, "tushare", "baostock", validated=True)
+    cached = cm.get_cached_kline("600542")
+    assert cached is not None
+    assert len(cached) == 3
+
+
+def test_get_validated_dates_only_returns_dual_source(temp_cache_config):
+    """get_validated_dates 与读取标准一致，只返回双源校验通过的日期。"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    df_dual = make_sample_df(days=3, start_days_ago=10)
+    df_single = make_sample_df(days=2, start_days_ago=5)
+    cm.save_to_cache("600543", df_dual, "tushare", "baostock", validated=True)
+    cm.save_to_cache("600543", df_single, "tushare", "none", validated=True)
+    dates = cm.get_validated_dates("600543")
+    # 单源行的日期不应出现在结果集中
+    for d in df_single['date']:
+        assert d not in dates
+    for d in df_dual['date']:
+        assert d in dates
+
+
+def test_cache_statistics_separates_dual_single_unvalidated(temp_cache_config):
+    """统计接口能分别计数双源/单源/未校验。"""
+    from StockDataMaster.cache.cache_manager import CacheManager
+    cm = CacheManager(temp_cache_config, {})
+    # 3 行双源
+    cm.save_to_cache("600544", make_sample_df(days=3, start_days_ago=20), "tushare", "baostock", validated=True)
+    # 2 行单源（validated=1, source2='none'）
+    cm.save_to_cache("600545", make_sample_df(days=2, start_days_ago=15), "tushare", "none", validated=True)
+    # 1 行未校验
+    cm.save_to_cache("600546", make_sample_df(days=1, start_days_ago=10), "tushare", None, validated=False)
+
+    stats = cm.get_cache_statistics()
+    assert stats['dual_source_records'] == 3
+    assert stats['single_source_records'] == 2
+    assert stats['unvalidated_records'] == 1
 
 
 # ─── 测试：三选二投票校验 ──────────────────────────────────────────────────────
