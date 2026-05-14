@@ -1,37 +1,40 @@
 @echo off
-chcp 65001 > nul
 setlocal
 
 rem ================================================================
-rem  StockDataMaster - MkDocs 本地预览(热重载)
-rem  - 自动安装文档依赖(若 mkdocs 缺失)
-rem  - 启动 mkdocs serve 并自动打开浏览器
+rem  StockDataMaster - MkDocs local preview (hot reload)
+rem  - Auto installs docs deps when mkdocs is missing
+rem  - Starts `mkdocs serve` and opens browser
+rem
+rem  Note: keep this file ASCII-only.
+rem  cmd.exe parses .bat files using the system ANSI codepage (GBK
+rem  on CN Windows). UTF-8 (no BOM) inside .bat breaks parsing.
 rem ================================================================
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 set "DOCS_PORT=8000"
-rem URL 含 /StockDataMaster/ 子路径,与 mkdocs.yml 中 site_url 对齐
+rem URL contains /StockDataMaster/ sub-path, aligned with site_url in mkdocs.yml
 set "DOCS_URL=http://127.0.0.1:%DOCS_PORT%/StockDataMaster/"
 
 where mkdocs >nul 2>nul
 if errorlevel 1 (
-    echo [INFO] 未检测到 mkdocs,正在安装文档依赖...
+    echo [INFO] mkdocs not found, installing docs requirements...
     pip install -r requirements-docs.txt
     if errorlevel 1 (
-        echo [ERROR] 安装文档依赖失败,请检查 Python / pip / 网络环境
+        echo [ERROR] Failed to install docs requirements. Check Python/pip/network.
         pause
         exit /b 1
     )
 )
 
-echo [INFO] 正在启动 MkDocs 热重载服务: %DOCS_URL%
-echo [INFO] 修改 docs\ 下任意 markdown 或源码 docstring 都将自动刷新
-echo [INFO] 按 Ctrl+C 停止服务
+echo [INFO] Starting MkDocs hot-reload server at %DOCS_URL%
+echo [INFO] Edits to docs\*.md or source-code docstrings reload automatically.
+echo [INFO] Press Ctrl+C to stop.
 echo.
 
-rem 延迟 3 秒后打开浏览器,确保 mkdocs 已经监听端口
+rem Open browser after 3s so mkdocs has time to bind the port
 start "" /b cmd /c "timeout /t 3 /nobreak >nul & start %DOCS_URL%"
 
 mkdocs serve --dev-addr=127.0.0.1:%DOCS_PORT%
