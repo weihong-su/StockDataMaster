@@ -10,6 +10,16 @@ edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
 
+# 让 `mkdocs serve` 监视源码目录,改 docstring 时自动 rebuild
+watch:
+  - __init__.py
+  - data_master.py
+  - config.py
+  - adapters
+  - cache
+  - health
+  - utils
+
 theme:
   name: material
   language: zh
