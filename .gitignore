@@ -21,6 +21,9 @@ venv/
 /docs/archive/
 /docs/**/*.tmp
 /docs/**/*.log
+# MkDocs 构建产物与本地预览日志
+/site/
+/mkdocs_test.log
 
 # ─── 测试文件（旧的独立测试脚本保留，但不追踪旧pycache）─────────────────────
 # 注意：test/suite/ 目录（pytest框架）应全部提交

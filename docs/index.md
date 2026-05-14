@@ -8,7 +8,7 @@
 
 ### 入门指南
 - [快速开始](quick-start.md) - 5分钟上手
-- [API 参考](api-reference.md) - 完整API文档
+- [API 参考](api/index.md) - 完整API文档(源码 docstring 自动抽取)
 - [常见问题](faq.md) - 问题排查
 
 ### 技术深度
@@ -81,4 +81,4 @@ master.close()
 - **版本**: 1.2.0
 - **最后更新**: 2026-04-30
 - **适用版本**: StockDataMaster 1.2.0+
-- [更新日志](../CHANGELOG.md)
+- [更新日志](changelog.md)

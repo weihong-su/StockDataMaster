@@ -1,0 +1,127 @@
+site_name: StockDataMaster
+site_description: 专业的股票数据主数据接口系统 - 多数据源集成、智能缓存、健康检测
+site_author: StockQuant Team
+site_url: https://Su-M10.github.io/StockDataMaster/
+
+repo_name: Su-M10/StockDataMaster
+repo_url: https://github.com/Su-M10/StockDataMaster
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 切换至暗色
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: 切换至亮色
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - 首页: index.md
+  - 快速开始: quick-start.md
+  - 架构设计: architecture.md
+  - API 参考:
+      - 总览: api/index.md
+      - data_master(主接口): api/data_master.md
+      - cache(缓存): api/cache.md
+      - health(健康检测): api/health.md
+      - adapters(数据源适配器): api/adapters.md
+      - config(配置): api/config.md
+      - utils(工具): api/utils.md
+  - 接口规范: 接口调用规范与最佳实践.md
+  - 性能报告: StockDataMaster性能深度分析报告.md
+  - xtquant 增强: xtquant实时数据稳定性增强实施报告.md
+  - 常见问题: faq.md
+  - 更新日志: changelog.md
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+  - include-markdown
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [..]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            docstring_section_style: table
+            line_length: 88
+            filters:
+              - "!^_"
+              - "^__init__$"
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 4
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Su-M10/StockDataMaster
+
+exclude_docs: |
+  superpowers/
+  *.log
+  *.tmp
+
+# 严格模式由 CI 控制,本地预览不强制
+strict: false
