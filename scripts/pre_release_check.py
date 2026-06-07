@@ -11,12 +11,14 @@ scripts/pre_release_check.py
   1. 版本号一致性（__init__.py == CHANGELOG.md 最新版本）
   2. CHANGELOG.md 包含新版本记录
   3. pytest 单元测试全部通过（排除集成测试）
-  4. 无未提交的修改（git 工作区干净）
+  4. 开源元数据完整（LICENSE/NOTICE/setup.py）
+  5. 敏感配置检查（仅允许已吊销 demo key）
+  6. 无未提交的修改（git 工作区干净）
 
 使用方法：
   python scripts/pre_release_check.py              # 标准检查
   python scripts/pre_release_check.py --skip-git   # 跳过 git 检查（CI环境）
-  python scripts/pre_release_check.py --version 1.2.0  # 指定期望版本
+  python scripts/pre_release_check.py --version 2.0.0  # 指定期望版本
 
 退出码：
   0 - 所有检查通过，可以发布
@@ -34,6 +36,9 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 PYTHON = sys.executable
+REPO_URL = "https://github.com/weihong-su/StockDataMaster"
+AUTHOR_EMAIL = "arthur@lovefree.ai"
+DEMO_TUSHARE_TOKEN = "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904"
 
 # ─── 颜色输出 ────────────────────────────────────────────────────────────────
 RED    = "\033[91m"
@@ -68,7 +73,7 @@ class ReleaseChecker:
     # ─── CHECK 1: 版本号一致性 ────────────────────────────────────────────────
 
     def check_version_consistency(self):
-        print(f"\n{BOLD}[1/4] 版本号一致性检查{RESET}")
+        print(f"\n{BOLD}[1/6] 版本号一致性检查{RESET}")
 
         # 从 __init__.py 读取版本
         init_path = os.path.join(PROJECT_ROOT, "__init__.py")
@@ -123,7 +128,7 @@ class ReleaseChecker:
     # ─── CHECK 2: CHANGELOG 内容检查 ──────────────────────────────────────────
 
     def check_changelog(self, version):
-        print(f"\n{BOLD}[2/4] CHANGELOG.md 内容检查{RESET}")
+        print(f"\n{BOLD}[2/6] CHANGELOG.md 内容检查{RESET}")
 
         changelog_path = os.path.join(PROJECT_ROOT, "CHANGELOG.md")
         if not os.path.exists(changelog_path):
@@ -155,7 +160,7 @@ class ReleaseChecker:
     # ─── CHECK 3: pytest 单元测试 ──────────────────────────────────────────────
 
     def check_unit_tests(self):
-        print(f"\n{BOLD}[3/4] 单元测试检查（pytest -m unit）{RESET}")
+        print(f"\n{BOLD}[3/6] 单元测试检查（pytest -m unit）{RESET}")
 
         suite_dir = os.path.join(PROJECT_ROOT, "test", "suite")
         if not os.path.exists(suite_dir):
@@ -206,10 +211,118 @@ class ReleaseChecker:
         except Exception as e:
             self._fail(f"运行测试时出现异常: {e}")
 
-    # ─── CHECK 4: git 工作区 ──────────────────────────────────────────────────
+    # ─── CHECK 4: 开源元数据 ─────────────────────────────────────────────────
+
+    def check_open_source_metadata(self):
+        print(f"\n{BOLD}[4/6] 开源元数据检查{RESET}")
+
+        required_files = ["LICENSE", "NOTICE", "CONTRIBUTING.md", "SECURITY.md"]
+        for filename in required_files:
+            path = os.path.join(PROJECT_ROOT, filename)
+            if os.path.exists(path):
+                ok(f"{filename} 存在")
+            else:
+                self._fail(f"{filename} 不存在")
+
+        setup_path = os.path.join(PROJECT_ROOT, "setup.py")
+        if not os.path.exists(setup_path):
+            self._fail("setup.py 不存在")
+            return
+
+        with open(setup_path, encoding='utf-8') as f:
+            setup_content = f.read()
+
+        expected_snippets = [
+            REPO_URL,
+            AUTHOR_EMAIL,
+            "Business Source License 1.1",
+            "Arthur SU",
+        ]
+        for snippet in expected_snippets:
+            if snippet in setup_content:
+                ok(f"setup.py 包含: {snippet}")
+            else:
+                self._fail(f"setup.py 缺少: {snippet}")
+
+        license_path = os.path.join(PROJECT_ROOT, "LICENSE")
+        if os.path.exists(license_path):
+            with open(license_path, encoding='utf-8') as f:
+                license_content = f.read()
+            if "Business Source License 1.1" in license_content and "Change License: MIT License" in license_content:
+                ok("LICENSE 声明 BSL 1.1 和 Change License")
+            else:
+                self._fail("LICENSE 未正确声明 BSL 1.1 / Change License")
+
+    # ─── CHECK 5: 敏感配置 ───────────────────────────────────────────────────
+
+    def check_sensitive_config(self):
+        print(f"\n{BOLD}[5/6] 敏感配置检查{RESET}")
+
+        config_path = os.path.join(PROJECT_ROOT, "config.json")
+        example_path = os.path.join(PROJECT_ROOT, "config.example.json")
+        env_example_path = os.path.join(PROJECT_ROOT, ".env.example")
+        gitignore_path = os.path.join(PROJECT_ROOT, ".gitignore")
+
+        if not os.path.exists(config_path):
+            self._fail("config.json 不存在")
+            return
+
+        with open(config_path, encoding='utf-8') as f:
+            config_content = f.read()
+
+        tokens = re.findall(r'"token"\s*:\s*"([^"]*)"', config_content)
+        unexpected_tokens = [
+            token for token in tokens
+            if token and token not in {DEMO_TUSHARE_TOKEN, "your_token", "your_tushare_token_here", "${TUSHARE_TOKEN}"}
+        ]
+
+        if unexpected_tokens:
+            self._fail("config.json 中疑似存在非 demo token，请改用根目录 .env 配置 TUSHARE_TOKEN")
+        elif DEMO_TUSHARE_TOKEN in tokens:
+            ok("config.json 仅包含允许的已吊销 demo key")
+        else:
+            ok("config.json 未发现真实 token")
+
+        if os.path.exists(example_path):
+            with open(example_path, encoding='utf-8') as f:
+                example_content = f.read()
+            if "${TUSHARE_TOKEN}" in example_content:
+                ok("config.example.json 使用环境变量占位")
+            else:
+                self._fail("config.example.json 未使用 TUSHARE_TOKEN 占位")
+        else:
+            self._fail("config.example.json 不存在")
+
+        if os.path.exists(env_example_path):
+            with open(env_example_path, encoding='utf-8') as f:
+                env_example_content = f.read()
+            if "TUSHARE_TOKEN=" in env_example_content:
+                ok(".env.example 包含 TUSHARE_TOKEN 模板")
+            else:
+                self._fail(".env.example 未包含 TUSHARE_TOKEN 模板")
+        else:
+            self._fail(".env.example 不存在")
+
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path, encoding='utf-8') as f:
+                gitignore_content = f.read()
+            if re.search(r'(?m)^\.env$', gitignore_content):
+                ok(".gitignore 已忽略 .env")
+            else:
+                self._fail(".gitignore 未忽略 .env")
+
+        config_py = os.path.join(PROJECT_ROOT, "config.py")
+        with open(config_py, encoding='utf-8') as f:
+            config_py_content = f.read()
+        if "TUSHARE_TOKEN" in config_py_content and "_load_dotenv" in config_py_content:
+            ok("config.py 支持 .env 加载和 TUSHARE_TOKEN 覆盖")
+        else:
+            self._fail("config.py 未支持 .env 加载或 TUSHARE_TOKEN 覆盖")
+
+    # ─── CHECK 6: git 工作区 ──────────────────────────────────────────────────
 
     def check_git_status(self):
-        print(f"\n{BOLD}[4/4] Git 工作区状态检查{RESET}")
+        print(f"\n{BOLD}[6/6] Git 工作区状态检查{RESET}")
 
         if self.skip_git:
             warn("已跳过 git 检查（--skip-git）")
@@ -270,6 +383,8 @@ class ReleaseChecker:
         version = self.check_version_consistency()
         self.check_changelog(version)
         self.check_unit_tests()
+        self.check_open_source_metadata()
+        self.check_sensitive_config()
         self.check_git_status()
 
         # ─── 最终结果 ─────────────────────────────────────────────────────────
@@ -310,7 +425,7 @@ def main():
     )
     parser.add_argument(
         '--version',
-        help="期望发布的版本号（如 1.2.0），用于验证代码版本是否匹配"
+        help="期望发布的版本号（如 2.0.0），用于验证代码版本是否匹配"
     )
     parser.add_argument(
         '--skip-git',

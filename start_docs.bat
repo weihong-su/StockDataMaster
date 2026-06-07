@@ -18,7 +18,7 @@ cd /d "%ROOT%"
 
 rem ---- Detect Python ----------------------------------------------
 set "PYTHON="
-set "CONDA_PY=C:\Users\PC\Anaconda3\envs\python38\python.exe"
+set "CONDA_PY=C:\Users\PC\Anaconda3\envs\python39\python.exe"
 if exist "%CONDA_PY%" (
     set "PYTHON=%CONDA_PY%"
     goto :CHECK_DEPS
@@ -36,7 +36,7 @@ if not errorlevel 1 (
     goto :CHECK_DEPS
 )
 
-echo [ERROR] Python not found. Install Python 3.8+ or set up conda env python38.
+echo [ERROR] Python not found. Install Python 3.9+ or set up conda env python39.
 pause
 exit /b 1
 

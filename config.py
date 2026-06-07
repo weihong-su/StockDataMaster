@@ -9,8 +9,29 @@ import os
 from typing import Dict, Any
 
 
+def _project_root() -> str:
+    """获取代码库根目录。"""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _strip_env_value(value: str) -> str:
+    """清理 .env 配置值两侧的空白和成对引号。"""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
 class Config:
     """配置管理类"""
+
+    ENV_OVERRIDES = {
+        "TUSHARE_TOKEN": ("data_sources", "tushare", "token"),
+        "XTQUANT_QMT_PATH": ("data_sources", "xtquant", "qmt_path"),
+        "XTQUANT_ACCOUNT": ("data_sources", "xtquant", "account"),
+        "STOCKDATAMASTER_LOG_LEVEL": ("logging", "level"),
+        "STOCKDATAMASTER_LOG_FILE": ("logging", "file"),
+    }
 
     def __init__(self, config_path: str = None):
         """
@@ -33,10 +54,47 @@ class Config:
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
+            self._load_dotenv()
+            self._apply_env_overrides()
         except FileNotFoundError:
             raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
         except json.JSONDecodeError as e:
             raise ValueError(f"配置文件JSON格式错误: {e}")
+
+    def _load_dotenv(self):
+        """加载代码库根目录 .env 文件，不覆盖已存在的环境变量。"""
+        env_path = os.path.join(_project_root(), ".env")
+        if not os.path.exists(env_path):
+            return
+
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+
+                os.environ[key] = _strip_env_value(value)
+
+    def _apply_env_overrides(self):
+        """用环境变量覆盖敏感或本地相关配置。"""
+        for env_name, path in self.ENV_OVERRIDES.items():
+            value = os.getenv(env_name)
+            if value:
+                self._set_nested(path, value)
+
+    def _set_nested(self, path, value):
+        """按路径写入嵌套配置。"""
+        current = self.config
+        for key in path[:-1]:
+            current = current.setdefault(key, {})
+        current[path[-1]] = value
 
     def reload(self):
         """热重载配置文件"""

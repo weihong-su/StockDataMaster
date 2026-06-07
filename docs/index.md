@@ -8,7 +8,9 @@
 
 ### 入门指南
 - [快速开始](quick-start.md) - 5分钟上手
+- [配置指南](configuration.md) - 使用 `.env` 管理 token 和本地配置
 - [API 参考](api/index.md) - 完整API文档(源码 docstring 自动抽取)
+- [开源与授权](opensource.md) - BSL 1.1、商业授权和赞助信息
 - [常见问题](faq.md) - 问题排查
 
 ### 技术深度
@@ -78,7 +80,7 @@ master.close()
 
 ## 文档版本
 
-- **版本**: 1.2.0
-- **最后更新**: 2026-04-30
-- **适用版本**: StockDataMaster 1.2.0+
+- **版本**: 2.0.0
+- **最后更新**: 2026-06-07
+- **适用版本**: StockDataMaster 2.0.0+
 - [更新日志](changelog.md)

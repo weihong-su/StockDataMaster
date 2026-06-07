@@ -11,8 +11,8 @@ StockDataMaster - 股票数据主数据接口系统
 - 统一前复权处理
 - 内置库支持(开箱即用,可移植)
 
-作者: StockQuant Team
-版本: 1.1.0
+作者: Arthur SU
+版本: 2.0.0
 """
 
 from .data_master import StockDataMaster
@@ -20,5 +20,5 @@ from .data_master import StockDataMaster
 # 向后兼容：保留 DataMaster 别名
 DataMaster = StockDataMaster
 
-__version__ = "1.1.1"
+__version__ = "2.0.0"
 __all__ = ["StockDataMaster", "DataMaster"]  # DataMaster保留向后兼容

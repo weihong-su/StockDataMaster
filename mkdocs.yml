@@ -1,10 +1,10 @@
 site_name: StockDataMaster
 site_description: 专业的股票数据主数据接口系统 - 多数据源集成、智能缓存、健康检测
-site_author: StockQuant Team
-site_url: https://Su-M10.github.io/StockDataMaster/
+site_author: Arthur SU
+site_url: https://weihong-su.github.io/StockDataMaster/
 
-repo_name: Su-M10/StockDataMaster
-repo_url: https://github.com/Su-M10/StockDataMaster
+repo_name: weihong-su/StockDataMaster
+repo_url: https://github.com/weihong-su/StockDataMaster
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -56,9 +56,11 @@ theme:
 nav:
   - 首页: index.md
   - 快速开始: quick-start.md
+  - 配置指南: configuration.md
   - 架构设计: architecture.md
   - API 参考:
       - 总览: api/index.md
+      - API 速查: api-reference.md
       - data_master(主接口): api/data_master.md
       - cache(缓存): api/cache.md
       - health(健康检测): api/health.md
@@ -68,6 +70,7 @@ nav:
   - 接口规范: 接口调用规范与最佳实践.md
   - 性能报告: StockDataMaster性能深度分析报告.md
   - xtquant 增强: xtquant实时数据稳定性增强实施报告.md
+  - 开源与授权: opensource.md
   - 常见问题: faq.md
   - 更新日志: changelog.md
 
@@ -126,7 +129,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/Su-M10/StockDataMaster
+      link: https://github.com/weihong-su/StockDataMaster
 
 exclude_docs: |
   superpowers/

@@ -30,19 +30,18 @@ def read_version():
 setup(
     name="StockDataMaster",
     version=read_version(),
-    author="StockQuant Team",
-    author_email="stockquant@example.com",
+    author="Arthur SU",
+    author_email="arthur@lovefree.ai",
     description="专业的股票数据主数据接口系统",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/stockquant",
+    url="https://github.com/weihong-su/StockDataMaster",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "Intended Audience :: Financial and Insurance Industry",
         "Topic :: Office/Business :: Financial :: Investment",
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
@@ -69,6 +68,9 @@ setup(
     package_data={
         'StockDataMaster': [
             'config.json',
+            'config.example.json',
+            'LICENSE',
+            'NOTICE',
             'lib/README.md',
             'lib/.gitignore',
             'lib/install_libs.py',
@@ -80,9 +82,11 @@ setup(
         ],
     },
     keywords="stock data finance quantitative trading",
+    license="Business Source License 1.1",
     project_urls={
-        "Documentation": "https://github.com/yourusername/stockquant/blob/master/StockDataMaster/README.md",
-        "Source": "https://github.com/yourusername/stockquant",
-        "Bug Reports": "https://github.com/yourusername/stockquant/issues",
+        "Documentation": "https://weihong-su.github.io/StockDataMaster/",
+        "Source": "https://github.com/weihong-su/StockDataMaster",
+        "Bug Reports": "https://github.com/weihong-su/StockDataMaster/issues",
+        "Funding": "https://buymeacoffee.com/suweihongc",
     },
 )

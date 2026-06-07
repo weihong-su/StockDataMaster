@@ -1,9 +1,5 @@
 name: Docs (MkDocs)
 
-# 说明:
-#   构建/部署默认全部 if:false 守门,不会真正运行。
-#   当需要启用 GitHub Pages 部署时,把下面两个 if:false 改为 if:true(或删除该行)即可。
-
 on:
   push:
     branches: [main]
@@ -20,6 +16,12 @@ on:
       - 'health/**'
       - 'utils/**'
       - '__init__.py'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'CONTRIBUTING.md'
+      - 'SECURITY.md'
+      - '.env.example'
+      - 'config.example.json'
   workflow_dispatch:
 
 permissions:
@@ -29,11 +31,10 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
-    if: false  # ← 守门:启用部署时改为 true 或删除此行
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -46,10 +47,10 @@ jobs:
           cache: 'pip'
 
       - name: Install docs dependencies
-        run: pip install -r requirements-docs.txt
+        run: python -m pip install -r requirements-docs.txt
 
       - name: Build MkDocs site
-        run: mkdocs build
+        run: python -m mkdocs build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -60,7 +61,6 @@ jobs:
           path: ./site
 
   deploy:
-    if: false  # ← 守门:启用部署时改为 true 或删除此行
     needs: build
     runs-on: ubuntu-latest
     environment:

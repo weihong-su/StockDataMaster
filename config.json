@@ -1,138 +1,186 @@
 {
-  "use_builtin_libs": true,
-  "data_sources": {
-    "tushare": {
-      "enabled": true,
-      "priority": 1,
-      "timeout": 10,
-      "retry_times": 2,
-      "token": "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
-      "use_for": ["kline_day"],
-      "use_adj_factor": false,
-      "max_calls_per_minute": 500,
-      "roles": {
-        "kline_day": { "priority": 1 },
-        "valuation": { "priority": 1 },
-        "stock_name": { "priority": 2 }
-      },
-      "comment": "付费用户首选，数据质量最高; use_adj_factor=false(默认): pro_bar原生复权(需2000积分); true: daily+adj_factor手动复权(120积分)"
-    },
-    "baostock": {
-      "enabled": true,
-      "priority": 2,
-      "timeout": 10,
-      "retry_times": 3,
-      "use_for": ["kline_day", "kline_minute", "valuation"],
-      "adjustflag": "2",
-      "roles": {
-        "kline_day": { "priority": 2 },
-        "kline_minute": { "priority": 2 },
-        "valuation": { "priority": 2 },
-        "validation": { "priority": 1 },
-        "stock_name": { "priority": 1 }
-      },
-      "comment": "免费兜底数据源，复权准确，数据权威; 校验源首选; 股票名称首选(含退市股); 已升级到baostock 0.9.1(服务器迁移至public-api.baostock.com)"
-    },
-    "mootdx": {
-      "enabled": true,
-      "priority": 3,
-      "timeout": 5,
-      "retry_times": 3,
-      "use_for": ["kline_day", "kline_minute", "tick"],
-      "adjustflag": "qfq",
-      "roles": {
-        "kline_day": { "priority": 3 },
-        "kline_minute": { "priority": 3 },
-        "tick": { "priority": 2 }
-      },
-      "comment": "速度快但前复权有已知问题，仅作应急备用; 不作为校验源"
-    },
-    "xtquant": {
-      "enabled": true,
-      "priority": 1,
-      "timeout": 5,
-      "retry_times": 2,
-      "use_for": ["tick"],
-      "fallback_to_5m": true,
-      "qmt_path": "",
-      "account": "",
-      "retry_delay": 0.5,
-      "retry_backoff_factor": 2.0,
-      "max_retry_delay": 5.0,
-      "connect_timeout": 10,
-      "connect_retry_times": 3,
-      "connect_retry_delay": 1.0,
-      "heartbeat_enabled": true,
-      "heartbeat_interval": 30,
-      "heartbeat_timeout": 5,
-      "auto_reconnect": true,
-      "max_reconnect_attempts": 5,
-      "cache_enabled": true,
-      "cache_only_daily": true,
-      "roles": {
-        "tick": { "priority": 1 },
-        "kline_minute": { "priority": 1 },
-        "kline_day": { "priority": 4 },
-        "validation": { "priority": 2, "time_slot": "trading" },
-        "stock_name": { "priority": 3 }
-      },
-      "comment": "实时Tick首选(真实tick)，分钟线主源; 需QMT客户端运行; 交易时段校验源补充"
-    }
-  },
-  "validation": {
-    "mode": "voting",
-    "quorum": 1,
-    "strategy": "fast_first",
-    "sources": ["xtquant", "baostock"],
-    "price_tolerance_abs": 0.01,
-    "price_tolerance_pct": 0.005,
-    "volume_tolerance_pct": 0.05,
-    "return_tolerance": 0.005,
-    "ratio_tolerance": 0.005,
-    "min_pass_rate": 0.8,
-    "skip_today_in_trading_hours": true,
-    "comment": "串行短路校验: xtquant(快,50ms)优先,通过即短路; 不通过再查baostock(慢,2-3s)"
-  },
-  "stock_name": {
-    "cache_enabled": true,
-    "cleanup_day": 5,
-    "baostock_max_consecutive_failures": 3,
-    "baostock_retry_cooldown": 300
-  },
-  "cache": {
-    "enabled": true,
-    "db_path": "cache/kline_cache.db",
-    "max_days_per_stock": 520,
-    "update_time": "15:30",
-    "stock_name_expire_days": 30,
-    "stock_name_cleanup_day": 5,
-    "stock_name_skip_expiration_check": true,
-    "validation": {
-      "price_tolerance_abs": 0.01,
-      "price_tolerance_pct": 0.005,
-      "volume_tolerance_pct": 0.05,
-      "return_tolerance": 0.005,
-      "ratio_tolerance": 0.005,
-      "min_pass_rate": 0.8
-    }
-  },
-  "health_check": {
-    "enabled": true,
-    "interval_seconds": 60,
-    "response_time_threshold": 5.0,
-    "consecutive_failures_threshold": 3,
-    "data_freshness_days": 3
-  },
-  "hot_switch": {
-    "enabled": true,
-    "smooth_transition": true,
-    "buffer_size": 10,
-    "switch_notification": true
-  },
-  "logging": {
-    "level": "INFO",
-    "file": "logs/data_master.log",
-    "max_bytes": 10485760,
-    "backup_count": 5
-  }
+    "use_builtin_libs":  true,
+    "data_sources":  {
+                         "tushare":  {
+                                         "enabled":  true,
+                                         "priority":  1,
+                                         "timeout":  10,
+                                         "retry_times":  2,
+                                         "token":  "3fc034badc40a35e029194a4c4d3540770f700e94a1085a4239f9904",
+                                         "use_for":  [
+                                                         "kline_day"
+                                                     ],
+                                         "use_adj_factor":  false,
+                                         "max_calls_per_minute":  500,
+                                         "roles":  {
+                                                       "kline_day":  {
+                                                                         "priority":  1
+                                                                     },
+                                                       "valuation":  {
+                                                                         "priority":  1
+                                                                     },
+                                                       "stock_name":  {
+                                                                          "priority":  2
+                                                                      }
+                                                   },
+            "comment":  "Tushare付费用户首选。当前token为已吊销demo key，仅用于展示配置结构；生产环境请在代码库根目录.env中配置TUSHARE_TOKEN覆盖。use_adj_factor=false: pro_bar原生复权；true: daily+adj_factor手动复权。"
+                                     },
+                         "baostock":  {
+                                          "enabled":  true,
+                                          "priority":  2,
+                                          "timeout":  10,
+                                          "retry_times":  3,
+                                          "use_for":  [
+                                                          "kline_day",
+                                                          "kline_minute",
+                                                          "valuation"
+                                                      ],
+                                          "adjustflag":  "2",
+                                          "roles":  {
+                                                        "kline_day":  {
+                                                                          "priority":  2
+                                                                      },
+                                                        "kline_minute":  {
+                                                                             "priority":  2
+                                                                         },
+                                                        "valuation":  {
+                                                                          "priority":  2
+                                                                      },
+                                                        "validation":  {
+                                                                           "priority":  1
+                                                                       },
+                                                        "stock_name":  {
+                                                                           "priority":  1
+                                                                       }
+                                                    },
+                                          "comment":  "免费兜底数据源，复权准确，数据权威; 校验源首选; 股票名称首选(含退市股); 已升级到baostock 0.9.1(服务器迁移至public-api.baostock.com)"
+                                      },
+                         "mootdx":  {
+                                        "enabled":  true,
+                                        "priority":  3,
+                                        "timeout":  5,
+                                        "retry_times":  3,
+                                        "use_for":  [
+                                                        "kline_day",
+                                                        "kline_minute",
+                                                        "tick"
+                                                    ],
+                                        "adjustflag":  "qfq",
+                                        "roles":  {
+                                                      "kline_day":  {
+                                                                        "priority":  3
+                                                                    },
+                                                      "kline_minute":  {
+                                                                           "priority":  3
+                                                                       },
+                                                      "tick":  {
+                                                                   "priority":  2
+                                                               }
+                                                  },
+                                        "comment":  "速度快但前复权有已知问题，仅作应急备用; 不作为校验源"
+                                    },
+                         "xtquant":  {
+                                         "enabled":  true,
+                                         "priority":  1,
+                                         "timeout":  5,
+                                         "retry_times":  2,
+                                         "use_for":  [
+                                                         "tick"
+                                                     ],
+                                         "fallback_to_5m":  true,
+                                         "qmt_path":  "",
+                                         "account":  "",
+                                         "retry_delay":  0.5,
+                                         "retry_backoff_factor":  2.0,
+                                         "max_retry_delay":  5.0,
+                                         "connect_timeout":  10,
+                                         "connect_retry_times":  3,
+                                         "connect_retry_delay":  1.0,
+                                         "heartbeat_enabled":  true,
+                                         "heartbeat_interval":  30,
+                                         "heartbeat_timeout":  5,
+                                         "auto_reconnect":  true,
+                                         "max_reconnect_attempts":  5,
+                                         "cache_enabled":  true,
+                                         "cache_only_daily":  true,
+                                         "roles":  {
+                                                       "tick":  {
+                                                                    "priority":  1
+                                                                },
+                                                       "kline_minute":  {
+                                                                            "priority":  1
+                                                                        },
+                                                       "kline_day":  {
+                                                                         "priority":  4
+                                                                     },
+                                                       "validation":  {
+                                                                          "priority":  2,
+                                                                          "time_slot":  "trading"
+                                                                      },
+                                                       "stock_name":  {
+                                                                          "priority":  3
+                                                                      }
+                                                   },
+                                         "comment":  "实时Tick首选(真实tick)，分钟线主源; 需QMT客户端运行; 交易时段校验源补充"
+                                     }
+                     },
+    "validation":  {
+                       "mode":  "voting",
+                       "quorum":  1,
+                       "strategy":  "fast_first",
+                       "sources":  [
+                                       "xtquant",
+                                       "baostock"
+                                   ],
+                       "price_tolerance_abs":  0.01,
+                       "price_tolerance_pct":  0.005,
+                       "volume_tolerance_pct":  0.05,
+                       "return_tolerance":  0.005,
+                       "ratio_tolerance":  0.005,
+                       "min_pass_rate":  0.8,
+                       "skip_today_in_trading_hours":  true,
+                       "comment":  "串行短路校验: xtquant(快,50ms)优先,通过即短路; 不通过再查baostock(慢,2-3s)"
+                   },
+    "stock_name":  {
+                       "cache_enabled":  true,
+                       "cleanup_day":  5,
+                       "baostock_max_consecutive_failures":  3,
+                       "baostock_retry_cooldown":  300
+                   },
+    "cache":  {
+                  "enabled":  true,
+                  "db_path":  "cache/kline_cache.db",
+                  "max_days_per_stock":  520,
+                  "update_time":  "15:30",
+                  "stock_name_expire_days":  30,
+                  "stock_name_cleanup_day":  5,
+                  "stock_name_skip_expiration_check":  true,
+                  "validation":  {
+                                     "price_tolerance_abs":  0.01,
+                                     "price_tolerance_pct":  0.005,
+                                     "volume_tolerance_pct":  0.05,
+                                     "return_tolerance":  0.005,
+                                     "ratio_tolerance":  0.005,
+                                     "min_pass_rate":  0.8
+                                 }
+              },
+    "health_check":  {
+                         "enabled":  true,
+                         "interval_seconds":  60,
+                         "response_time_threshold":  5.0,
+                         "consecutive_failures_threshold":  3,
+                         "data_freshness_days":  3
+                     },
+    "hot_switch":  {
+                       "enabled":  true,
+                       "smooth_transition":  true,
+                       "buffer_size":  10,
+                       "switch_notification":  true
+                   },
+    "logging":  {
+                    "level":  "INFO",
+                    "file":  "logs/data_master.log",
+                    "max_bytes":  10485760,
+                    "backup_count":  5
+                }
 }

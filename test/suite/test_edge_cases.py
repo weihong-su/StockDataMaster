@@ -108,7 +108,7 @@ def test_cache_get_with_date_filter(tmp_path):
             'low': 98.0, 'close': 102.0, 'volume': 1_000_000.0, 'amount': 0.0
         })
     df = pd.DataFrame(rows)
-    cm.save_to_cache("600603", df, "tushare", None, validated=True)
+    cm.save_to_cache("600603", df, "tushare", "baostock", validated=True)
 
     # 查询 2024-01-03 ~ 2024-01-07（最多5条）
     result = cm.get_cached_kline("600603", start_date='2024-01-03', end_date='2024-01-07')

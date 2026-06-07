@@ -1,13 +1,13 @@
 # StockDataMaster
 
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production-brightgreen.svg)]()
-[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://su-m10.github.io/StockDataMaster/)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg)](https://weihong-su.github.io/StockDataMaster/)
 
 专业的股票数据主数据接口系统，通过多数据源集成、智能缓存和健康检测，为量化交易和数据分析提供高可用、高性能的数据服务。
 
-📚 **[完整文档](https://su-m10.github.io/StockDataMaster/)** | 🚀 **[快速开始](https://su-m10.github.io/StockDataMaster/quick-start)** | 📖 **[API 参考](https://su-m10.github.io/StockDataMaster/api-reference)**
+📚 **[完整文档](https://weihong-su.github.io/StockDataMaster/)** | 🚀 **[快速开始](https://weihong-su.github.io/StockDataMaster/quick-start)** | 📖 **[API 参考](https://weihong-su.github.io/StockDataMaster/api-reference)**
 
 ---
 
@@ -97,7 +97,17 @@ master.close()
 
 ### 配置说明
 
-编辑 `config.json` 配置数据源和缓存策略：
+编辑 `config.json` 配置数据源和缓存策略。真实 Tushare token 推荐放在代码库根目录 `.env` 文件中，代码启动时会自动读取 `.env` 并覆盖配置文件里的 demo key：
+
+```bash
+copy .env.example .env
+```
+
+然后编辑 `.env`：
+
+```dotenv
+TUSHARE_TOKEN=your_tushare_token_here
+```
 
 ```json
 {
@@ -105,7 +115,7 @@ master.close()
     "tushare": {
       "enabled": true,
       "priority": 1,
-      "token": "your_tushare_token_here"
+      "token": "${TUSHARE_TOKEN}"
     }
   },
   "cache": {
@@ -192,6 +202,12 @@ master.close()
 数据路径：日K线 → baostock；实时 Tick → mootdx（5 分钟模拟）
 
 #### 付费用户（有 Tushare token）
+
+推荐先复制 `.env.example` 为 `.env`，再填写真实 token：
+
+```bash
+copy .env.example .env
+```
 
 ```json
 {
@@ -436,13 +452,14 @@ adjust='qfq'  # ✅ 仅支持前复权
 - [ ] `python -X utf8 -m pytest test/suite/ -v` 全部通过（132 项）
 - [ ] `python test/validate_robustness.py` 5/5 通过
 - [ ] `logs/` 目录已清理，临时文件已删除
-- [ ] `config.json` 中无真实 token
+- [ ] `config.json` 仅保留已吊销 demo key，真实 token 通过根目录 `.env` 注入
 
 **文档**
 
 - [ ] README.md 版本号已更新
 - [ ] CHANGELOG.md 已记录本次变更
 - [ ] CLAUDE.md 已同步更新
+- [ ] GitHub Pages 文档工作流已自动构建并发布
 
 **版本信息**
 
@@ -474,6 +491,15 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes-file CHANGELOG.md
 ---
 
 ## 更新日志
+
+### v2.0.0（2026-06）
+
+**开源治理与配置安全**：
+
+- 许可证调整为 Business Source License 1.1，非商业用途免费，商业用途需授权，Change License 为 MIT
+- 新增 `LICENSE`、`NOTICE`、贡献指南、安全策略、行为准则、Issue/PR 模板和赞助配置
+- 支持从根目录 `.env` 加载 `TUSHARE_TOKEN` 等敏感配置，并允许系统环境变量覆盖
+- 仓库元数据更新为 `weihong-su/StockDataMaster`，作者为 Arthur SU
 
 ### v1.2.0（2026-04）
 
@@ -513,9 +539,23 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes-file CHANGELOG.md
 
 ---
 
+## 赞助
+
+如果这个项目帮你节省了时间，欢迎通过以下方式支持维护：
+
+- Buy Me a Coffee: <https://buymeacoffee.com/suweihongc>
+- 微信/支付宝赞助二维码：可在项目发布页或后续文档资源中补充
+
 ## 许可证
 
-MIT License
+本项目采用 **Business Source License 1.1**：
+
+- 个人、学习、研究、评估和其他非商业用途免费
+- 商业用途请联系 `arthur@lovefree.ai` 获取授权
+- Change Date: 2030-06-07
+- Change License: MIT License
+
+仓库内保留的第三方数据源库和二进制运行文件仍受其各自许可证和服务条款约束，详见 [NOTICE](NOTICE)。
 
 ---
 

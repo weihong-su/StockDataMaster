@@ -1,0 +1,29 @@
+StockDataMaster Notice
+======================
+
+Copyright (c) 2026 Arthur SU.
+
+StockDataMaster is licensed under the Business Source License 1.1. See
+LICENSE for the full terms and the Change License.
+
+Third-party components
+----------------------
+
+This repository keeps selected third-party data-source libraries and binary
+runtime files under lib/ to reduce version drift and make the project easier
+to run in controlled environments. Those components remain governed by their
+own licenses and upstream terms. The StockDataMaster license does not change
+the license, ownership, or usage restrictions of third-party components.
+
+Before redistributing a derived package or using this repository in a
+commercial environment, review the licensing and service terms for every data
+source and client library you enable, including but not limited to Tushare,
+Baostock, Mootdx, and xtquant/QMT.
+
+Demo credentials
+----------------
+
+The Tushare value shipped in config.json is an invalidated demo key retained
+for documentation and configuration-shape compatibility. Users should provide
+their own token through the repository-local .env file or a private runtime
+environment variable.

@@ -1,0 +1,110 @@
+{
+  "use_builtin_libs": true,
+  "data_sources": {
+    "tushare": {
+      "enabled": true,
+      "priority": 1,
+      "timeout": 10,
+      "retry_times": 2,
+      "token": "${TUSHARE_TOKEN}",
+      "use_for": ["kline_day"],
+      "use_adj_factor": false,
+      "max_calls_per_minute": 500,
+      "roles": {
+        "kline_day": { "priority": 1 },
+        "valuation": { "priority": 1 },
+        "stock_name": { "priority": 2 }
+      },
+      "comment": "请通过环境变量 TUSHARE_TOKEN 提供真实 token；config.json 中的值仅为已吊销 demo key。"
+    },
+    "baostock": {
+      "enabled": true,
+      "priority": 2,
+      "timeout": 10,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute", "valuation"],
+      "adjustflag": "2",
+      "roles": {
+        "kline_day": { "priority": 2 },
+        "kline_minute": { "priority": 2 },
+        "valuation": { "priority": 2 },
+        "validation": { "priority": 1 },
+        "stock_name": { "priority": 1 }
+      }
+    },
+    "mootdx": {
+      "enabled": true,
+      "priority": 3,
+      "timeout": 5,
+      "retry_times": 3,
+      "use_for": ["kline_day", "kline_minute", "tick"],
+      "adjustflag": "qfq",
+      "roles": {
+        "kline_day": { "priority": 3 },
+        "kline_minute": { "priority": 3 },
+        "tick": { "priority": 2 }
+      }
+    },
+    "xtquant": {
+      "enabled": true,
+      "priority": 1,
+      "timeout": 5,
+      "retry_times": 2,
+      "use_for": ["tick"],
+      "fallback_to_5m": true,
+      "qmt_path": "",
+      "account": "",
+      "roles": {
+        "tick": { "priority": 1 },
+        "kline_minute": { "priority": 1 },
+        "kline_day": { "priority": 4 },
+        "validation": { "priority": 2, "time_slot": "trading" },
+        "stock_name": { "priority": 3 }
+      }
+    }
+  },
+  "validation": {
+    "mode": "voting",
+    "quorum": 1,
+    "strategy": "fast_first",
+    "sources": ["xtquant", "baostock"],
+    "price_tolerance_abs": 0.01,
+    "price_tolerance_pct": 0.005,
+    "volume_tolerance_pct": 0.05,
+    "return_tolerance": 0.005,
+    "ratio_tolerance": 0.005,
+    "min_pass_rate": 0.8,
+    "skip_today_in_trading_hours": true
+  },
+  "stock_name": {
+    "cache_enabled": true,
+    "cleanup_day": 5,
+    "baostock_max_consecutive_failures": 3,
+    "baostock_retry_cooldown": 300
+  },
+  "cache": {
+    "enabled": true,
+    "db_path": "cache/kline_cache.db",
+    "max_days_per_stock": 520,
+    "update_time": "15:30"
+  },
+  "health_check": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "response_time_threshold": 5.0,
+    "consecutive_failures_threshold": 3,
+    "data_freshness_days": 3
+  },
+  "hot_switch": {
+    "enabled": true,
+    "smooth_transition": true,
+    "buffer_size": 10,
+    "switch_notification": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/data_master.log",
+    "max_bytes": 10485760,
+    "backup_count": 5
+  }
+}

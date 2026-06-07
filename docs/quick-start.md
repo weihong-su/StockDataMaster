@@ -8,7 +8,7 @@
 
 - Python 3.7+
 - Windows / Linux / macOS
-- 推荐使用 Anaconda Python 3.8
+- 推荐使用 Anaconda Python 3.9
 
 ---
 
@@ -28,20 +28,32 @@ pip install pandas numpy mootdx baostock tushare
 
 ### 3. 配置 Tushare Token
 
-编辑 `config.json`：
+推荐通过代码库根目录 `.env` 文件提供真实 token，避免把凭据写入仓库：
+
+```bash
+copy .env.example .env
+```
+
+然后编辑 `.env`：
+
+```dotenv
+TUSHARE_TOKEN=你的Tushare Token
+```
+
+也可以参考 `config.example.json` 调整本地配置。系统环境变量优先级高于 `.env`，适合 CI 或临时覆盖：
 
 ```json
 {
   "data_sources": {
     "tushare": {
       "enabled": true,
-      "token": "你的Tushare Token"
+      "token": "${TUSHARE_TOKEN}"
     }
   }
 }
 ```
 
-**获取Token**: 访问 https://tushare.pro/ 注册并获取
+**获取Token**: 访问 https://tushare.pro/ 注册并获取。`config.json` 中保留的值是已吊销 demo key，只用于展示配置结构。
 
 ---
 
@@ -150,6 +162,7 @@ python interactive_test_gui.py
 ## 下一步
 
 - [API 参考手册](api-reference.md) - 完整API文档
+- [配置指南](configuration.md) - `.env`、token 和本地配置
 - [架构设计](architecture.md) - 深入了解系统设计
 - [常见问题](faq.md) - 问题排查
 

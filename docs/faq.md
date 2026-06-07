@@ -19,20 +19,19 @@ pip install pandas numpy mootdx baostock tushare
 
 ### Q2: Tushare Token 如何配置？
 
-在 `config.json` 中配置：
+推荐在代码库根目录 `.env` 中配置：
 
-```json
-{
-  "data_sources": {
-    "tushare": {
-      "enabled": true,
-      "token": "你的 Tushare Token"
-    }
-  }
-}
+```bash
+copy .env.example .env
 ```
 
-获取 Token：访问 https://tushare.pro/ 注册并获取。
+然后编辑 `.env`：
+
+```dotenv
+TUSHARE_TOKEN=你的 Tushare Token
+```
+
+获取 Token：访问 https://tushare.pro/ 注册并获取。更详细的说明见 [配置指南](configuration.md)。
 
 ### Q3: xtquant 如何配置？
 
@@ -252,5 +251,6 @@ tail -f logs/data_master.log
 ## 更多帮助
 
 - [快速开始指南](quick-start.md)
+- [配置指南](configuration.md)
 - [API 参考手册](api-reference.md)
 - [架构设计文档](architecture.md)

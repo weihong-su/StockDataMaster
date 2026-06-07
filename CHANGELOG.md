@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] - 2026-06-07
+
+### Added
+- **开源治理文件**：新增 BSL 1.1 `LICENSE`、`NOTICE`、`CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、Issue/PR 模板和赞助配置。
+- **示例配置**：新增 `config.example.json` 和 `.env.example`，展示真实 token 的推荐注入方式。
+- **本地环境配置**：`Config` 支持读取代码库根目录 `.env`，并通过 `TUSHARE_TOKEN`、`XTQUANT_QMT_PATH`、`XTQUANT_ACCOUNT`、`STOCKDATAMASTER_LOG_LEVEL` 和 `STOCKDATAMASTER_LOG_FILE` 覆盖本地敏感配置。
+
+### Changed
+- **许可证调整为 Business Source License 1.1**：个人、学习、研究、评估和非商业用途免费；商业用途需联系作者授权；Change License 为 MIT。
+- **项目元数据更新**：仓库地址切换为 `weihong-su/StockDataMaster`，作者更新为 Arthur SU，联系邮箱更新为 `arthur@lovefree.ai`。
+- **默认开发环境**：Windows 启动脚本优先使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe`。
+
+### Security
+- 明确 `config.json` 中 Tushare 值为已吊销 demo key，并在文档与发布检查中引导用户使用根目录 `.env` 管理真实凭据。
+
+---
+
 ## [1.2.0] - 2026-04-30
 
 ### Added
@@ -93,8 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/Su-M10/StockDataMaster/compare/v1.2.0...HEAD
-[1.2.0]: https://github.com/Su-M10/StockDataMaster/compare/v1.1.1...v1.2.0
-[1.1.1]: https://github.com/Su-M10/StockDataMaster/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/Su-M10/StockDataMaster/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/Su-M10/StockDataMaster/releases/tag/v1.0.0
+[Unreleased]: https://github.com/weihong-su/StockDataMaster/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/weihong-su/StockDataMaster/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/weihong-su/StockDataMaster/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/weihong-su/StockDataMaster/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/weihong-su/StockDataMaster/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/weihong-su/StockDataMaster/releases/tag/v1.0.0

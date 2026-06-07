@@ -87,6 +87,32 @@ def test_get_none_default():
     assert c.get('nonexistent.key') is None
 
 
+def test_dotenv_loads_tushare_token(monkeypatch, tmp_path):
+    """.env 中的 TUSHARE_TOKEN 会覆盖配置文件中的 demo 值"""
+    import StockDataMaster.config as config_module
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("# test dotenv\nTUSHARE_TOKEN=dotenv_token\n", encoding='utf-8')
+    monkeypatch.setattr(config_module, "_project_root", lambda: str(tmp_path))
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+    c = make_config()
+    assert c.get('data_sources.tushare.token') == 'dotenv_token'
+
+
+def test_process_env_overrides_dotenv(monkeypatch, tmp_path):
+    """系统环境变量优先级高于 .env"""
+    import StockDataMaster.config as config_module
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUSHARE_TOKEN=dotenv_token\n", encoding='utf-8')
+    monkeypatch.setattr(config_module, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setenv("TUSHARE_TOKEN", "process_token")
+
+    c = make_config()
+    assert c.get('data_sources.tushare.token') == 'process_token'
+
+
 # ─── 测试：数据源查询 ─────────────────────────────────────────────────────────
 
 def test_get_enabled_sources_sorted():

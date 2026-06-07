@@ -4,7 +4,7 @@ cd /d "%~dp0"
 :: Detect Python (conda env first, then system PATH)
 set PYTHON=
 
-set CONDA_PY=C:\Users\PC\Anaconda3\envs\python38\python.exe
+set CONDA_PY=C:\Users\PC\Anaconda3\envs\python39\python.exe
 if exist "%CONDA_PY%" (
     set PYTHON=%CONDA_PY%
     goto :RUN
@@ -22,7 +22,7 @@ if not errorlevel 1 (
     goto :RUN
 )
 
-echo Python not found. Please install Python 3.8+ or set up conda env python38.
+echo Python not found. Please install Python 3.9+ or set up conda env python39.
 pause
 exit /b 1
 
