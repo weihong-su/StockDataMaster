@@ -85,6 +85,96 @@ class BaostockAdapter(DataSourceAdapter):
             return f'sz.{code}'
         return code
 
+    def health_check(self) -> Dict[str, Any]:
+        """
+        Baostock 专属健康检查。
+
+        不能复用基类实现，因为基类会调用 get_kline()，而 get_kline()
+        带有快速失败冷却机制。业务查询连续失败后，基类 health_check 会被
+        冷却逻辑直接短路为 None，导致健康检查无法主动探测恢复。
+        """
+        from datetime import datetime, timedelta
+
+        start_time = time.time()
+        result = {
+            'status': 'ok',
+            'response_time': 0.0,
+            'data_freshness': True,
+            'error_message': None
+        }
+
+        try:
+            if not self.is_connected:
+                self.logger.debug(f"{self.name} 健康检查: 未连接,尝试重连")
+                if not self.connect():
+                    result['status'] = 'error'
+                    result['error_message'] = f'连接失败: {self.last_error or "未知错误"}'
+                    result['response_time'] = time.time() - start_time
+                    return result
+
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+
+            rs = bs.query_history_k_data_plus(
+                'sh.600000',
+                'date,code,close,volume',
+                start_date=start_date,
+                end_date=end_date,
+                frequency='d',
+                adjustflag='2'
+            )
+
+            result['response_time'] = time.time() - start_time
+
+            if rs.error_code != '0':
+                self.last_error = rs.error_msg
+                self._consecutive_failures += 1
+                self._last_failure_time = time.time()
+                self.error_count += 1
+                result['status'] = 'error'
+                result['error_message'] = f'Baostock查询失败: {rs.error_msg}'
+                return result
+
+            rows = []
+            while (rs.error_code == '0') and rs.next():
+                rows.append(rs.get_row_data())
+
+            if not rows:
+                self._consecutive_failures += 1
+                self._last_failure_time = time.time()
+                self.error_count += 1
+                result['status'] = 'error'
+                result['error_message'] = '无法获取测试数据'
+                return result
+
+            latest_date = pd.to_datetime(rows[-1][0])
+            days_diff = (datetime.now() - latest_date).days
+            if days_diff > self.config.get('data_freshness_days', 3):
+                result['status'] = 'warning'
+                result['data_freshness'] = False
+                result['error_message'] = f'数据不新鲜,最新数据日期: {latest_date.date()}'
+
+            threshold = self.config.get('timeout', 5)
+            if result['response_time'] > threshold:
+                result['status'] = 'warning'
+                result['error_message'] = f'响应时间过长: {result["response_time"]:.2f}秒'
+
+            self._consecutive_failures = 0
+            self.error_count = 0
+            self.last_error = None
+
+        except Exception as e:
+            result['status'] = 'error'
+            result['error_message'] = str(e)
+            result['response_time'] = time.time() - start_time
+            self.last_error = str(e)
+            self.error_count += 1
+            self._consecutive_failures += 1
+            self._last_failure_time = time.time()
+            self.logger.error(f"Baostock健康检查异常: {e}")
+
+        return result
+
     def get_kline(
         self,
         code: str,

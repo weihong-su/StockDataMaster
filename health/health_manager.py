@@ -120,8 +120,9 @@ class HealthManager:
                                 f"{name} 健康检查仍失败({self.failure_counts[name]}次): {result['error_message']}"
                             )
 
-                        # 检查是否需要切换
-                        if self.failure_counts[name] >= self.failure_threshold:
+                        # 检查是否需要切换：同一轮连续故障只在跨过阈值时触发一次。
+                        # 否则后台线程每隔 interval_seconds 会重复记录"触发数据源切换"。
+                        if self.failure_counts[name] == self.failure_threshold:
                             self._trigger_switch(name, result['error_message'])
                     else:
                         # 成功则重置失败计数

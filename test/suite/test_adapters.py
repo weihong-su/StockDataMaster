@@ -4,6 +4,9 @@ test_adapters.py - 适配器单元测试（不需要网络）
 """
 
 import pytest
+import time
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -76,6 +79,45 @@ class TestBaostockAdapter:
         from StockDataMaster.adapters.baostock_adapter import BaostockAdapter
         assert 'd' in BaostockAdapter.FREQ_MAP
         assert '5m' in BaostockAdapter.FREQ_MAP
+
+    def test_health_check_bypasses_fast_fail_cooldown(self):
+        """健康检查应绕过业务快速失败冷却,用于主动探测恢复"""
+        a = self._make()
+        a.is_connected = True
+        a._consecutive_failures = 3
+        a._last_failure_time = time.time()
+
+        rs = MagicMock()
+        rs.error_code = '0'
+        rs.fields = ['date', 'code', 'close', 'volume']
+        latest = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        rs.next.side_effect = [True, False]
+        rs.get_row_data.return_value = [latest, 'sh.600000', '8.88', '1000000']
+
+        with patch('StockDataMaster.adapters.baostock_adapter.bs') as mock_bs:
+            mock_bs.query_history_k_data_plus.return_value = rs
+            result = a.health_check()
+
+        assert result['status'] == 'ok'
+        assert a._consecutive_failures == 0
+        mock_bs.query_history_k_data_plus.assert_called_once()
+
+    def test_health_check_records_query_failure(self):
+        """健康检查真实查询失败时应记录失败计数和错误信息"""
+        a = self._make()
+        a.is_connected = True
+
+        rs = MagicMock()
+        rs.error_code = '10002007'
+        rs.error_msg = '网络接收错误。'
+
+        with patch('StockDataMaster.adapters.baostock_adapter.bs') as mock_bs:
+            mock_bs.query_history_k_data_plus.return_value = rs
+            result = a.health_check()
+
+        assert result['status'] == 'error'
+        assert '网络接收错误' in result['error_message']
+        assert a._consecutive_failures == 1
 
 
 # ─── Mootdx 适配器 ───────────────────────────────────────────────────────────

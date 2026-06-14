@@ -102,6 +102,23 @@ def test_switch_triggered_on_consecutive_failures(health_config):
         "tushare 连续失败后应切换或记录失败次数"
 
 
+def test_switch_triggered_once_during_same_failure_streak(health_config):
+    """同一轮连续故障跨过阈值后不应每次健康检查都重复触发切换"""
+    adapters = make_mock_adapters()
+    hm = make_health_manager(health_config, adapters)
+    adapters['baostock'].health_check.return_value = {
+        "status": "error", "response_time": 10.0,
+        "data_freshness": False, "error_message": "无法获取测试数据"
+    }
+    hm._trigger_switch = MagicMock()
+
+    for _ in range(5):
+        hm.check_all_sources()
+
+    assert hm.failure_counts['baostock'] == 5
+    hm._trigger_switch.assert_called_once_with('baostock', '无法获取测试数据')
+
+
 # ─── 测试：健康报告 ───────────────────────────────────────────────────────────
 
 def test_health_report_structure(health_config):
