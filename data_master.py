@@ -669,12 +669,16 @@ class StockDataMaster:
             if 'baostock' in self.adapters:
                 try:
                     import baostock as bs
+                    from .adapters.baostock_helper import apply_api_key, describe_error
 
                     # 会话复用 - 确保baostock已登录
                     if not self._bs_session_active:
+                        # 新版 baostock 0.9.x: 登录前应用 API Key（旧版无 set_API_key 时自动跳过）
+                        bs_api_key = self.config.get('data_sources.baostock.api_key', '')
+                        apply_api_key(bs_api_key, self.logger)
                         lg = bs.login()
                         if lg.error_code != '0':
-                            self.logger.warning(f"baostock登录失败: {lg.error_msg}")
+                            self.logger.warning(f"baostock登录失败: {describe_error(lg.error_code, lg.error_msg)}")
                             return None
                         self._bs_session_active = True
                         self._bs_last_login_time = datetime.now()
@@ -703,7 +707,7 @@ class StockDataMaster:
                             self.logger.debug(f"获取股票名称成功: {clean_code} -> {stock_name}")
                             return stock_name
                     else:
-                        self.logger.warning(f"查询股票基本信息失败: {rs.error_msg}")
+                        self.logger.warning(f"查询股票基本信息失败: {describe_error(rs.error_code, rs.error_msg)}")
                         # 会话可能失效,标记需要重新登录
                         self._bs_session_active = False
 

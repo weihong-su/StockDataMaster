@@ -56,7 +56,7 @@ setup(
     extras_require={
         'full': [
             'mootdx>=0.8.4',
-            'baostock>=0.8.8',
+            'baostock==0.9.1',
             'tushare>=1.2.89',
         ],
         'dev': [

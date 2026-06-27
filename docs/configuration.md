@@ -43,6 +43,7 @@ STOCKDATAMASTER_LOG_FILE=logs/data_master.log
 | 环境变量 | 覆盖配置 | 说明 |
 | --- | --- | --- |
 | `TUSHARE_TOKEN` | `data_sources.tushare.token` | Tushare 访问 token |
+| `BAOSTOCK_API_KEY` | `data_sources.baostock.api_key` | Baostock 0.9.x API Key（留空则匿名访问） |
 | `XTQUANT_QMT_PATH` | `data_sources.xtquant.qmt_path` | QMT 客户端路径 |
 | `XTQUANT_ACCOUNT` | `data_sources.xtquant.account` | QMT 账号 |
 | `STOCKDATAMASTER_LOG_LEVEL` | `logging.level` | 日志级别 |
@@ -59,3 +60,15 @@ STOCKDATAMASTER_LOG_FILE=logs/data_master.log
 ## 示例配置文件
 
 `config.example.json` 展示了可提交的配置形态，其中 token 使用 `${TUSHARE_TOKEN}` 占位。真实本地配置可以保留 `config.json` 的结构，再用 `.env` 覆盖敏感值。
+
+---
+
+## Baostock 0.9.x 说明
+
+新版 Baostock（0.9.x，已锁定 `baostock==0.9.1`）收紧了访问格式与行为，系统已统一适配：
+
+- **API Key（可选）**：如持有 Baostock API Key，可通过 `.env` 的 `BAOSTOCK_API_KEY` 或 `config.json` 的 `data_sources.baostock.api_key` 提供，登录前自动注入；留空则匿名访问，功能不受影响。
+- **复权类型归一化**：内部统一映射为 Baostock 接受的 `'1'`（后复权）/`'2'`（前复权）/`'3'`（不复权）。
+- **错误可读化**：登录/查询错误码显式校验，对账号激活、权限不足、登录数超限等错误补充中文可读提示，便于排查。
+- **自动降级**：Baostock 故障时按数据源优先级自动降级到 Mootdx，不阻塞主流程。
+

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **baostock 0.9.x 适配辅助模块**：新增 `baostock_helper.py`，集中处理 Baostock 新版收紧的访问格式与行为，包括登录前注入 API Key、复权类型归一化、激活/权限类错误可读化。
+- **`BAOSTOCK_API_KEY` 环境变量**：支持通过 `.env` 或系统环境变量注入 Baostock API Key（留空则匿名访问），与 Tushare 凭据管理方式保持一致。
+
+### Changed
+- **baostock 锁定到 0.9.1**：`setup.py` 和 `requirements.txt` 中从 `baostock>=0.8.8`/`baostock>=0.9.1` 锁定为 `baostock==0.9.1`，避免新版服务器端行为变更导致兼容问题。
+- **适配器登录前注入 API Key**：`BaostockAdapter.connect()` 和 `StockDataMaster.get_stock_name()` 登录前自动调用 `set_API_key`（旧版无此函数时自动跳过）。
+- **错误提示增强**：登录/查询失败时，对账号激活(`10001007`)、权限不足(`10001006`)、登录数超限(`10001005`)等错误码输出中文可读提示。
+- **配置模板**：`.env.example`、`config.json`、`config.example.json` 同步新增 `api_key` 字段。
+
+### Fixed
+- **复权类型归一化**：统一通过 `normalize_adjustflag()` 将 `qfq`/`hfq` 等复权标识映射为 baostock 接受的 `'1'`/`'2'`/`'3'`，消除旧版内联三元表达式的边界情况。
+
 ---
 
 ## [2.0.0] - 2026-06-07

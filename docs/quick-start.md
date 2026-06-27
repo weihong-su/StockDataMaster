@@ -17,7 +17,7 @@
 ### 1. 安装核心依赖
 
 ```bash
-pip install pandas numpy mootdx baostock tushare
+pip install pandas numpy mootdx baostock==0.9.1 tushare
 ```
 
 ### 2. 安装 xtquant（可选）

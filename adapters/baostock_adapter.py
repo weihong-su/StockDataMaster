@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 import pandas as pd
 import baostock as bs
 from .base_adapter import DataSourceAdapter
+from .baostock_helper import apply_api_key, normalize_adjustflag, describe_error
 
 
 class BaostockAdapter(DataSourceAdapter):
@@ -36,6 +37,7 @@ class BaostockAdapter(DataSourceAdapter):
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         self.login_result = None
+        self.api_key = config.get('api_key', '')
         self._consecutive_failures = 0
         self._last_failure_time = 0.0
 
@@ -48,6 +50,8 @@ class BaostockAdapter(DataSourceAdapter):
         original_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(self._CONNECT_TIMEOUT)
         try:
+            # 新版 baostock 0.9.x: 登录前应用 API Key（旧版无 set_API_key 时自动跳过，匿名访问）
+            apply_api_key(self.api_key, self.logger)
             self.login_result = bs.login()
         except Exception as e:
             self.logger.error(f"{self.name} 连接失败: {e}")
@@ -62,8 +66,9 @@ class BaostockAdapter(DataSourceAdapter):
             self.logger.info(f"{self.name} 连接成功")
             return True
         else:
-            self.logger.error(f"{self.name} 连接失败: {self.login_result.error_msg}")
-            self.last_error = self.login_result.error_msg
+            error_detail = describe_error(self.login_result.error_code, self.login_result.error_msg)
+            self.logger.error(f"{self.name} 连接失败: {error_detail}")
+            self.last_error = error_detail
             self.is_connected = False
             return False
 
@@ -127,12 +132,13 @@ class BaostockAdapter(DataSourceAdapter):
             result['response_time'] = time.time() - start_time
 
             if rs.error_code != '0':
-                self.last_error = rs.error_msg
+                error_detail = describe_error(rs.error_code, rs.error_msg)
+                self.last_error = error_detail
                 self._consecutive_failures += 1
                 self._last_failure_time = time.time()
                 self.error_count += 1
                 result['status'] = 'error'
-                result['error_message'] = f'Baostock查询失败: {rs.error_msg}'
+                result['error_message'] = f'Baostock查询失败: {error_detail}'
                 return result
 
             rows = []
@@ -236,8 +242,8 @@ class BaostockAdapter(DataSourceAdapter):
                 from datetime import datetime
                 end_date = datetime.now().strftime('%Y-%m-%d')
 
-            # 设置复权类型: 2=前复权, 1=后复权, 3=不复权
-            adjustflag = '2' if adjust == 'qfq' else '1' if adjust == 'hfq' else '3'
+            # 设置复权类型: 归一化为 baostock 接受的 '1'(后复权)/'2'(前复权)/'3'(不复权)
+            adjustflag = normalize_adjustflag(adjust)
 
             # 字段定义：
             # - 日线/周线/月线：包含 turn(换手率)，无 time 字段
@@ -259,8 +265,9 @@ class BaostockAdapter(DataSourceAdapter):
             )
 
             if rs.error_code != '0':
-                self.logger.error(f"Baostock查询失败 {bs_code}: {rs.error_msg}")
-                self.last_error = rs.error_msg
+                error_detail = describe_error(rs.error_code, rs.error_msg)
+                self.logger.error(f"Baostock查询失败 {bs_code}: {error_detail}")
+                self.last_error = error_detail
                 self._consecutive_failures += 1
                 self._last_failure_time = time.time()
                 return None
@@ -352,7 +359,9 @@ class BaostockAdapter(DataSourceAdapter):
             )
 
             if rs.error_code != '0':
-                self.logger.error(f"Baostock估值查询失败 {bs_code}: {rs.error_msg}")
+                error_detail = describe_error(rs.error_code, rs.error_msg)
+                self.logger.error(f"Baostock估值查询失败 {bs_code}: {error_detail}")
+                self.last_error = error_detail
                 return None
 
             data_list = []

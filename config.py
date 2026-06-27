@@ -27,6 +27,7 @@ class Config:
 
     ENV_OVERRIDES = {
         "TUSHARE_TOKEN": ("data_sources", "tushare", "token"),
+        "BAOSTOCK_API_KEY": ("data_sources", "baostock", "api_key"),
         "XTQUANT_QMT_PATH": ("data_sources", "xtquant", "qmt_path"),
         "XTQUANT_ACCOUNT": ("data_sources", "xtquant", "account"),
         "STOCKDATAMASTER_LOG_LEVEL": ("logging", "level"),

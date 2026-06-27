@@ -7,7 +7,7 @@ numpy>=1.21.0          # 数值计算
 # 数据源库(可选,建议使用内置库)
 # 如果use_builtin_libs=false,则需要安装以下库:
 mootdx>=0.8.4          # 通达信数据接口
-baostock>=0.9.1        # Baostock数据接口
+baostock==0.9.1        # Baostock数据接口(0.9.x 收紧访问格式与行为,锁定到 0.9.1)
 tushare>=1.2.89        # Tushare数据接口
 
 # xtquant需要单独安装QMT客户端

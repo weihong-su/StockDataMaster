@@ -10,7 +10,7 @@ StockDataMaster 常见问题解答
 
 ```bash
 # 核心依赖
-pip install pandas numpy mootdx baostock tushare
+pip install pandas numpy mootdx baostock==0.9.1 tushare
 
 # xtquant（可选，需要 QMT 客户端）
 # 下载 miniQMT：https://dict.thinktrader.net/
@@ -192,7 +192,7 @@ with ThreadPoolExecutor(max_workers=3) as executor:
 2. 查看日志：`logs/data_master.log`
 3. 运行健康检查：`master.get_health_status()`
 4. 检查 Tushare Token 是否有效
-5. Baostock 连接问题：确认已升级到 0.9.1（`pip install baostock --upgrade`）
+5. Baostock 连接问题：确认已锁定到 0.9.1（`pip install baostock==0.9.1`）；若日志提示账号需激活/权限不足，请登录 baostock.com 完成激活，或在 `.env` 配置 `BAOSTOCK_API_KEY`（匿名访问可留空）
 
 ### Q17: 缓存不生效怎么办？
 
