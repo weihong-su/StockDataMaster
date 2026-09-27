@@ -109,13 +109,16 @@ class StockDataMaster:
             try:
                 source_config = self.config.get_data_source_config(source_name)
                 adapter = AdapterFactory.create_adapter(source_name, source_config)
+                # 即使初次连接失败也保留适配器，让业务请求和健康线程能够自愈重连。
+                self.adapters[source_name] = adapter
 
                 # 尝试连接
                 if adapter.connect():
-                    self.adapters[source_name] = adapter
                     self.logger.info(f"数据源{source_name}初始化成功")
                 else:
-                    self.logger.warning(f"数据源{source_name}连接失败")
+                    self.logger.warning(
+                        f"数据源{source_name}初次连接失败，已保留用于后续重连"
+                    )
 
             except Exception as e:
                 self.logger.error(f"数据源{source_name}初始化失败: {e}")
@@ -925,38 +928,16 @@ class StockDataMaster:
             self.logger.debug(f"baostock在冷却期，跳过查询: {code}")
             return None
 
-        bs_code = self._to_baostock_code(code)
         adapter = self.adapters.get('baostock')
-        if not adapter:
+        if not adapter or not hasattr(adapter, 'get_stock_name'):
             return None
 
         try:
-            import baostock as bs
-
-            # 确保登录
-            if not self._bs_session_active:
-                rs = bs.login()
-                if rs.error_code == '0':
-                    self._bs_session_active = True
-                else:
-                    self.logger.debug(f"baostock登录失败: {rs.error_msg}")
-                    self._baostock_consecutive_failures += 1
-                    self._check_baostock_cooldown()
-                    return None
-
-            # 查询股票基本信息
-            rs = bs.query_stock_basic(code=bs_code)
-
-            if rs.error_code == '0':
-                while rs.next():
-                    row = rs.get_row_data()
-                    if len(row) > 1:
-                        name = row[1]  # 第二列是股票名称
-                        self._baostock_consecutive_failures = 0  # 重置失败计数
-                        self.logger.debug(f"baostock获取股票名称成功: {code} -> {name}")
-                        return name
-            else:
-                self.logger.debug(f"baostock查询失败: {code} {rs.error_msg}")
+            name = adapter.get_stock_name(code)
+            if name:
+                self._baostock_consecutive_failures = 0
+                self.logger.debug(f"baostock获取股票名称成功: {code} -> {name}")
+                return name
 
         except Exception as e:
             self.logger.debug(f"baostock获取股票名称异常: {code} {e}")

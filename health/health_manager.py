@@ -31,10 +31,14 @@ class HealthManager:
         self.check_interval = config.get('health_check.interval_seconds', 60)
         self.response_threshold = config.get('health_check.response_time_threshold', 5.0)
         self.failure_threshold = config.get('health_check.consecutive_failures_threshold', 3)
+        self.max_failure_interval = config.get(
+            'health_check.max_failure_interval_seconds', 900
+        )
 
         # 健康状态记录
         self.health_status = {}  # {adapter_name: {'status': 'ok', 'last_check': datetime, ...}}
         self.failure_counts = {}  # {adapter_name: count}
+        self.next_check_at = {}   # {adapter_name: monotonic timestamp}
 
         # 当前活跃数据源(按用途分类)
         self.active_sources = {
@@ -51,6 +55,7 @@ class HealthManager:
         self.monitor_thread = None
         self.is_running = False
         self.lock = threading.Lock()
+        self._stop_event = threading.Event()
 
     def start_monitoring(self):
         """启动健康监控线程"""
@@ -59,6 +64,7 @@ class HealthManager:
             return
 
         self.is_running = True
+        self._stop_event.clear()
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
         self.logger.info(f"健康监控线程已启动,检查间隔: {self.check_interval}秒")
@@ -66,6 +72,7 @@ class HealthManager:
     def stop_monitoring(self):
         """停止健康监控线程"""
         self.is_running = False
+        self._stop_event.set()
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
         self.logger.info("健康监控线程已停止")
@@ -75,65 +82,78 @@ class HealthManager:
         while self.is_running:
             try:
                 # 1. 检查所有数据源健康状态
-                self.check_all_sources()
+                self.check_all_sources(respect_backoff=True)
 
                 # 2. 交易时段自动恢复xtquant
                 self._auto_recover_xtquant()
 
-                time.sleep(self.check_interval)
+                self._stop_event.wait(self.check_interval)
             except Exception as e:
                 self.logger.error(f"健康监控异常: {e}")
-                time.sleep(self.check_interval)
+                self._stop_event.wait(self.check_interval)
 
-    def check_all_sources(self):
-        """检查所有数据源的健康状态"""
-        with self.lock:
-            for name, adapter in self.adapters.items():
-                try:
-                    # 执行健康检查
-                    result = adapter.health_check()
+    def check_all_sources(self, respect_backoff=False):
+        """检查所有数据源；网络调用不持有全局状态锁。"""
+        now_mono = time.monotonic()
+        for name, adapter in list(self.adapters.items()):
+            if (respect_backoff
+                    and self.next_check_at.get(name, 0) > now_mono):
+                continue
+            try:
+                result = adapter.health_check()
+            except Exception as e:
+                result = {
+                    'status': 'error',
+                    'response_time': 0.0,
+                    'data_freshness': False,
+                    'error_message': str(e),
+                }
 
-                    # 获取上一次的状态
-                    prev_status = self.health_status.get(name, {}).get('status', 'unknown')
+            trigger_switch = False
+            recovered = False
+            first_failure = False
+            with self.lock:
+                prev_status = self.health_status.get(
+                    name, {}
+                ).get('status', 'unknown')
+                self.health_status[name] = {
+                    'status': result['status'],
+                    'last_check': datetime.now(),
+                    'response_time': result['response_time'],
+                    'data_freshness': result['data_freshness'],
+                    'error_message': result['error_message']
+                }
 
-                    # 更新健康状态
-                    self.health_status[name] = {
-                        'status': result['status'],
-                        'last_check': datetime.now(),
-                        'response_time': result['response_time'],
-                        'data_freshness': result['data_freshness'],
-                        'error_message': result['error_message']
-                    }
+                if result['status'] == 'error':
+                    failures = self.failure_counts.get(name, 0) + 1
+                    self.failure_counts[name] = failures
+                    first_failure = prev_status != 'error' or failures == 1
+                    trigger_switch = failures == self.failure_threshold
+                    if respect_backoff:
+                        interval = min(
+                            self.check_interval * (2 ** (failures - 1)),
+                            self.max_failure_interval,
+                        )
+                        self.next_check_at[name] = now_mono + interval
+                else:
+                    recovered = prev_status == 'error'
+                    self.failure_counts[name] = 0
+                    self.next_check_at[name] = now_mono + self.check_interval
 
-                    # 更新失败计数
-                    if result['status'] == 'error':
-                        self.failure_counts[name] = self.failure_counts.get(name, 0) + 1
-
-                        # 只在首次失败或状态变化时记录WARNING
-                        if prev_status != 'error' or self.failure_counts[name] == 1:
-                            self.logger.warning(
-                                f"{name} 健康检查失败: {result['error_message']}"
-                            )
-                        # 持续失败时只记录DEBUG级别
-                        else:
-                            self.logger.debug(
-                                f"{name} 健康检查仍失败({self.failure_counts[name]}次): {result['error_message']}"
-                            )
-
-                        # 检查是否需要切换：同一轮连续故障只在跨过阈值时触发一次。
-                        # 否则后台线程每隔 interval_seconds 会重复记录"触发数据源切换"。
-                        if self.failure_counts[name] == self.failure_threshold:
-                            self._trigger_switch(name, result['error_message'])
-                    else:
-                        # 成功则重置失败计数
-                        # 如果从失败恢复,记录INFO
-                        if prev_status == 'error':
-                            self.logger.info(f"{name} 健康检查已恢复")
-                        self.failure_counts[name] = 0
-
-                except Exception as e:
-                    self.logger.error(f"{name} 健康检查异常: {e}")
-                    self.failure_counts[name] = self.failure_counts.get(name, 0) + 1
+            if result['status'] == 'error':
+                if first_failure:
+                    self.logger.warning(
+                        f"{name} 健康检查失败: {result['error_message']}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"{name} 健康检查仍失败"
+                        f"({self.failure_counts[name]}次): {result['error_message']}"
+                    )
+                if trigger_switch:
+                    self._trigger_switch(name, result['error_message'])
+            elif recovered:
+                self.logger.info(f"{name} 健康检查已恢复")
 
     def _auto_recover_xtquant(self):
         """

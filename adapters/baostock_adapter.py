@@ -5,6 +5,7 @@ Baostock数据源适配器
 """
 
 import time
+import threading
 from typing import Optional, Dict, Any
 import pandas as pd
 import baostock as bs
@@ -33,6 +34,12 @@ class BaostockAdapter(DataSourceAdapter):
     # 快速失败参数（类级常量）
     _FAST_FAIL_THRESHOLD = 3   # 连续失败 N 次后启用快速失败
     _FAST_FAIL_COOLDOWN = 300  # 快速失败冷却窗口（秒）
+    # baostock SDK 使用进程级全局会话，所有实例和线程必须串行访问。
+    _SESSION_LOCK = threading.RLock()
+    _TRANSPORT_ERROR_MARKERS = (
+        '10002007', '网络接收', '接收数据', 'decompress', 'truncated stream',
+        'socket', 'timed out', 'connection reset', 'broken pipe',
+    )
 
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
@@ -44,8 +51,25 @@ class BaostockAdapter(DataSourceAdapter):
     # 连接超时（秒）：通过 socket.setdefaulttimeout 控制 bs.login() 的 TCP 超时
     _CONNECT_TIMEOUT = 5
 
+    @classmethod
+    def _is_transport_error(cls, code='', message=''):
+        text = f'{code} {message}'.lower()
+        return any(marker.lower() in text for marker in cls._TRANSPORT_ERROR_MARKERS)
+
+    def _logout_locked(self):
+        try:
+            bs.logout()
+        except Exception:
+            pass
+        self.login_result = None
+        self.is_connected = False
+
     def connect(self) -> bool:
         """连接Baostock数据源（带超时保护，最多等待 _CONNECT_TIMEOUT 秒）"""
+        with self._SESSION_LOCK:
+            return self._connect_locked()
+
+    def _connect_locked(self) -> bool:
         import socket
         original_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(self._CONNECT_TIMEOUT)
@@ -74,12 +98,62 @@ class BaostockAdapter(DataSourceAdapter):
 
     def disconnect(self):
         """断开连接"""
-        try:
-            bs.logout()
-            self.is_connected = False
-            self.logger.info(f"{self.name} 已断开连接")
-        except:
-            pass
+        with self._SESSION_LOCK:
+            try:
+                self._logout_locked()
+                self.logger.info(f"{self.name} 已断开连接")
+            except Exception:
+                pass
+
+    def _query_rows(self, query, operation):
+        """串行执行查询；传输层故障时重建会话并重试一次。"""
+        with self._SESSION_LOCK:
+            for attempt in range(2):
+                if not self.is_connected and not self._connect_locked():
+                    return None, [], self.last_error or '连接失败'
+                try:
+                    rs = query()
+                    if rs.error_code != '0':
+                        error_detail = describe_error(rs.error_code, rs.error_msg)
+                        if attempt == 0 and self._is_transport_error(
+                                rs.error_code, rs.error_msg):
+                            self.logger.warning(
+                                f"{operation}传输失败，重建会话后重试: {error_detail}"
+                            )
+                            self._logout_locked()
+                            continue
+                        return rs, [], error_detail
+
+                    rows = []
+                    while (rs.error_code == '0') and rs.next():
+                        rows.append(rs.get_row_data())
+                    return rs, rows, None
+                except Exception as e:
+                    if attempt == 0 and self._is_transport_error(message=str(e)):
+                        self.logger.warning(
+                            f"{operation}传输异常，重建会话后重试: {e}"
+                        )
+                        self._logout_locked()
+                        continue
+                    return None, [], str(e)
+            return None, [], f'{operation}重试失败'
+
+    def get_stock_name(self, code: str) -> Optional[str]:
+        """通过受会话锁保护的 baostock 接口获取股票名称。"""
+        bs_code = self._add_bs_prefix(code)
+        rs, rows, error = self._query_rows(
+            lambda: bs.query_stock_basic(code=bs_code),
+            f'Baostock股票名称查询 {bs_code}',
+        )
+        if error:
+            self.last_error = error
+            return None
+        if not rows:
+            return None
+        fields = list(getattr(rs, 'fields', []) or [])
+        if 'code_name' in fields:
+            return rows[0][fields.index('code_name')]
+        return rows[0][1] if len(rows[0]) > 1 else None
 
     def _add_bs_prefix(self, code: str) -> str:
         """为股票代码添加baostock前缀"""
@@ -120,30 +194,28 @@ class BaostockAdapter(DataSourceAdapter):
             end_date = datetime.now().strftime('%Y-%m-%d')
             start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
 
-            rs = bs.query_history_k_data_plus(
-                'sh.600000',
-                'date,code,close,volume',
-                start_date=start_date,
-                end_date=end_date,
-                frequency='d',
-                adjustflag='2'
+            rs, rows, error = self._query_rows(
+                lambda: bs.query_history_k_data_plus(
+                    'sh.600000',
+                    'date,code,close,volume',
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency='d',
+                    adjustflag='2'
+                ),
+                'Baostock健康检查',
             )
 
             result['response_time'] = time.time() - start_time
 
-            if rs.error_code != '0':
-                error_detail = describe_error(rs.error_code, rs.error_msg)
-                self.last_error = error_detail
+            if error:
+                self.last_error = error
                 self._consecutive_failures += 1
                 self._last_failure_time = time.time()
                 self.error_count += 1
                 result['status'] = 'error'
-                result['error_message'] = f'Baostock查询失败: {error_detail}'
+                result['error_message'] = f'Baostock查询失败: {error}'
                 return result
-
-            rows = []
-            while (rs.error_code == '0') and rs.next():
-                rows.append(rs.get_row_data())
 
             if not rows:
                 self._consecutive_failures += 1
@@ -255,27 +327,24 @@ class BaostockAdapter(DataSourceAdapter):
                 fields = "date,time,code,open,high,low,close,volume,amount,adjustflag"
 
             # 使用官方推荐迭代模式获取数据（比 get_data() 更稳定）
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                fields,
-                start_date=start_date,
-                end_date=end_date,
-                frequency=bs_freq,
-                adjustflag=adjustflag
+            rs, data_list, error = self._query_rows(
+                lambda: bs.query_history_k_data_plus(
+                    bs_code,
+                    fields,
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency=bs_freq,
+                    adjustflag=adjustflag
+                ),
+                f'Baostock K线查询 {bs_code}',
             )
 
-            if rs.error_code != '0':
-                error_detail = describe_error(rs.error_code, rs.error_msg)
-                self.logger.error(f"Baostock查询失败 {bs_code}: {error_detail}")
-                self.last_error = error_detail
+            if error:
+                self.logger.error(f"Baostock查询失败 {bs_code}: {error}")
+                self.last_error = error
                 self._consecutive_failures += 1
                 self._last_failure_time = time.time()
                 return None
-
-            # 迭代收集数据（官方推荐模式）
-            data_list = []
-            while (rs.error_code == '0') and rs.next():
-                data_list.append(rs.get_row_data())
 
             if not data_list:
                 self.logger.debug(f"Baostock未获取到数据: {bs_code}")
@@ -349,24 +418,22 @@ class BaostockAdapter(DataSourceAdapter):
                 start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
             # 查询估值数据（迭代模式）
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,code,peTTM,pbMRQ,psTTM,pcfNcfTTM",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="3"
+            rs, data_list, error = self._query_rows(
+                lambda: bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,code,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="3"
+                ),
+                f'Baostock估值查询 {bs_code}',
             )
 
-            if rs.error_code != '0':
-                error_detail = describe_error(rs.error_code, rs.error_msg)
-                self.logger.error(f"Baostock估值查询失败 {bs_code}: {error_detail}")
-                self.last_error = error_detail
+            if error:
+                self.logger.error(f"Baostock估值查询失败 {bs_code}: {error}")
+                self.last_error = error
                 return None
-
-            data_list = []
-            while (rs.error_code == '0') and rs.next():
-                data_list.append(rs.get_row_data())
 
             if not data_list:
                 self.logger.warning(f"Baostock未获取到估值数据: {bs_code}")

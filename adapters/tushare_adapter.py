@@ -39,6 +39,10 @@ class TushareAdapter(DataSourceAdapter):
         self._max_cpm: int = config.get('max_calls_per_minute', 500)
         self._rate_times: deque = deque()
         self._rate_lock = threading.Lock()
+        self.retry_times = config.get('retry_times', 2)
+        self.retry_delay = config.get('retry_delay', 1.0)
+        self.retry_backoff = config.get('retry_backoff_factor', 2.0)
+        self.max_retry_delay = config.get('max_retry_delay', 8.0)
 
     def connect(self) -> bool:
         """连接Tushare数据源"""
@@ -50,6 +54,14 @@ class TushareAdapter(DataSourceAdapter):
 
             ts.set_token(self.token)
             self.pro = ts.pro_api()
+            probe = self._call(
+                self.pro.trade_cal,
+                exchange='SSE',
+                start_date='20240101',
+                end_date='20240110',
+            )
+            if probe is None:
+                raise RuntimeError('trade_cal 探针返回空响应')
             self.is_connected = True
             self.logger.info(f"{self.name} 连接成功")
             return True
@@ -66,21 +78,53 @@ class TushareAdapter(DataSourceAdapter):
         self.is_connected = False
         self.logger.info(f"{self.name} 已断开连接")
 
-    def _call(self, func, **kwargs):
-        """频次限速封装：用滑动窗口控制每分钟 API 调用次数不超过 max_calls_per_minute。"""
+    @staticmethod
+    def _is_retryable_error(error):
+        text = str(error).lower()
+        permanent = (
+            'token', '权限', '积分', 'permission', '参数', 'invalid',
+            '接口访问权限',
+        )
+        if any(marker in text for marker in permanent):
+            return False
+        transient = (
+            '429', '频率', 'timeout', 'timed out', 'connection', 'reset',
+            'temporarily', '502', '503', '504', '网络', 'remote end',
+        )
+        return any(marker in text for marker in transient)
+
+    def _acquire_rate_slot(self):
         while True:
             with self._rate_lock:
                 now = time.monotonic()
-                # 清理 60 秒前的旧记录
                 while self._rate_times and now - self._rate_times[0] >= 60.0:
                     self._rate_times.popleft()
                 if len(self._rate_times) < self._max_cpm:
                     self._rate_times.append(now)
-                    break
+                    return
                 wait = 60.0 - (now - self._rate_times[0])
-            self.logger.debug(f"Tushare 频次已达 {self._max_cpm}/min 上限，等待 {wait:.2f}s")
+            self.logger.debug(
+                f"Tushare 频次已达 {self._max_cpm}/min 上限，等待 {wait:.2f}s"
+            )
             time.sleep(max(wait, 0.001))
-        return func(**kwargs)
+
+    def _call(self, func, **kwargs):
+        """限速调用；仅对临时网络/限流错误做指数退避重试。"""
+        delay = self.retry_delay
+        for attempt in range(self.retry_times + 1):
+            self._acquire_rate_slot()
+            try:
+                return func(**kwargs)
+            except Exception as e:
+                self.last_error = str(e)
+                if attempt >= self.retry_times or not self._is_retryable_error(e):
+                    raise
+                self.logger.warning(
+                    f"Tushare临时错误，{delay:.1f}秒后重试"
+                    f"({attempt + 1}/{self.retry_times}): {e}"
+                )
+                time.sleep(delay)
+                delay = min(delay * self.retry_backoff, self.max_retry_delay)
 
     def _convert_code(self, code: str) -> str:
         """

@@ -483,21 +483,28 @@ class XtquantAdapter(DataSourceAdapter):
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                # 步骤1: 下载历史数据到本地
-                # download_history_data 是异步操作，返回None是正常的
+                # 步骤1: 下载历史数据到本地。优先使用可等待完成的批量接口，
+                # 避免固定 sleep 后仍读到未完成或陈旧的数据。
                 self.logger.debug(f"xtquant下载历史数据: {xt_code} ({xt_period}) {start_date}-{end_date}")
-
-                self.xt_data.download_history_data(
-                    stock_code=xt_code,
-                    period=xt_period,
-                    start_time=start_date,
-                    end_time=end_date
+                download_many = getattr(
+                    self.xt_data, 'download_history_data2', None
                 )
-
-                # 步骤2: 等待下载完成
-                # 分钟线数据量大，等待更久
-                wait_time = 5 if xt_period in ['1m', '5m'] else 3
-                time.sleep(wait_time)
+                if download_many is not None:
+                    download_many(
+                        [xt_code],
+                        period=xt_period,
+                        start_time=start_date,
+                        end_time=end_date,
+                    )
+                else:
+                    self.xt_data.download_history_data(
+                        stock_code=xt_code,
+                        period=xt_period,
+                        start_time=start_date,
+                        end_time=end_date
+                    )
+                    wait_time = 5 if xt_period in ['1m', '5m'] else 3
+                    time.sleep(wait_time)
 
                 # 步骤3: 从本地读取数据
                 # 使用 get_market_data_ex（比 get_local_data 更可靠）
@@ -509,7 +516,7 @@ class XtquantAdapter(DataSourceAdapter):
                     end_time=end_date,
                     count=-1,
                     dividend_type='front' if adjust == 'qfq' else 'none',
-                    fill_data=True
+                    fill_data=False
                 )
 
                 # 步骤4: 处理返回数据
@@ -543,6 +550,17 @@ class XtquantAdapter(DataSourceAdapter):
                     self.logger.warning(f"xtquant数据转换失败: {code} ({freq})")
                     if attempt < max_retries - 1:
                         time.sleep(1)
+                        continue
+                    return None
+
+                result_df = self._drop_invalid_kline_rows(
+                    result_df, code, freq
+                )
+                if result_df.empty:
+                    self.logger.warning(
+                        f"xtquant清理异常行后无有效K线: {code} ({freq})"
+                    )
+                    if attempt < max_retries - 1:
                         continue
                     return None
 
@@ -590,6 +608,28 @@ class XtquantAdapter(DataSourceAdapter):
                     continue
 
         return None
+
+    def _drop_invalid_kline_rows(
+        self, df: pd.DataFrame, code: str, freq: str
+    ) -> pd.DataFrame:
+        """删除 QMT 填充/损坏行，避免单条异常导致整只股票失败。"""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        data = df.copy()
+        required = ['open', 'high', 'low', 'close', 'volume']
+        for col in required:
+            data[col] = pd.to_numeric(data[col], errors='coerce')
+        valid = data[required].notna().all(axis=1)
+        valid &= (data[['open', 'high', 'low', 'close']] > 0.1).all(axis=1)
+        valid &= data['volume'] >= 0
+        valid &= data['high'] >= data[['open', 'low', 'close']].max(axis=1)
+        valid &= data['low'] <= data[['open', 'high', 'close']].min(axis=1)
+        dropped = int((~valid).sum())
+        if dropped:
+            self.logger.warning(
+                f"xtquant过滤异常K线: {code} ({freq}) {dropped}/{len(data)}条"
+            )
+        return data.loc[valid].reset_index(drop=True)
 
     def _convert_to_standard_format(self, df: pd.DataFrame, freq: str) -> Optional[pd.DataFrame]:
         """

@@ -156,6 +156,41 @@ def test_start_stop_monitoring(health_config):
     assert hm.is_running is False
 
 
+def test_background_health_check_respects_failure_backoff(health_config):
+    adapters = make_mock_adapters()
+    hm = make_health_manager(health_config, adapters)
+    adapters['mootdx'].health_check.return_value = {
+        "status": "error", "response_time": 5.0,
+        "data_freshness": False, "error_message": "节点不可用"
+    }
+
+    hm.check_all_sources(respect_backoff=True)
+    hm.check_all_sources(respect_backoff=True)
+
+    assert adapters['mootdx'].health_check.call_count == 1
+
+
+def test_health_network_call_does_not_hold_state_lock(health_config):
+    adapters = make_mock_adapters()
+    hm = make_health_manager(health_config, adapters)
+    observed = []
+
+    def health_check():
+        acquired = hm.lock.acquire(blocking=False)
+        observed.append(acquired)
+        if acquired:
+            hm.lock.release()
+        return {
+            "status": "ok", "response_time": 0.1,
+            "data_freshness": True, "error_message": None
+        }
+
+    adapters['mootdx'].health_check.side_effect = health_check
+    hm.check_all_sources()
+
+    assert observed == [True]
+
+
 # ─── 测试：roles 格式适配 ─────────────────────────────────────────────────────
 
 class TestHealthManagerRoles:

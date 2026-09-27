@@ -5,6 +5,7 @@ test_adapters.py - 适配器单元测试（不需要网络）
 
 import pytest
 import time
+import pandas as pd
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -112,12 +113,34 @@ class TestBaostockAdapter:
         rs.error_msg = '网络接收错误。'
 
         with patch('StockDataMaster.adapters.baostock_adapter.bs') as mock_bs:
+            login = MagicMock()
+            login.error_code = '0'
+            mock_bs.login.return_value = login
             mock_bs.query_history_k_data_plus.return_value = rs
             result = a.health_check()
 
         assert result['status'] == 'error'
         assert '网络接收错误' in result['error_message']
         assert a._consecutive_failures == 1
+        assert mock_bs.query_history_k_data_plus.call_count == 2
+
+    def test_transport_error_reconnects_once(self):
+        a = self._make()
+        a.is_connected = True
+        failed = MagicMock(error_code='10002007', error_msg='网络接收错误。')
+        success = MagicMock(error_code='0', fields=['code', 'code_name'])
+        success.next.side_effect = [True, False]
+        success.get_row_data.return_value = ['sh.600519', '贵州茅台']
+
+        with patch('StockDataMaster.adapters.baostock_adapter.bs') as mock_bs:
+            login = MagicMock(error_code='0')
+            mock_bs.login.return_value = login
+            mock_bs.query_stock_basic.side_effect = [failed, success]
+            assert a.get_stock_name('600519') == '贵州茅台'
+
+        assert mock_bs.logout.called
+        assert mock_bs.login.call_count == 1
+        assert mock_bs.query_stock_basic.call_count == 2
 
 
 # ─── Mootdx 适配器 ───────────────────────────────────────────────────────────
@@ -136,3 +159,96 @@ class TestMootdxAdapter:
         """日线频率值正确（mootdx 日线 = 9）"""
         from StockDataMaster.adapters.mootdx_adapter import MootdxAdapter
         assert MootdxAdapter.FREQ_MAP['d'] == 9
+
+    def test_connect_skips_node_that_cannot_return_probe_data(self):
+        from StockDataMaster.adapters.mootdx_adapter import MootdxAdapter
+
+        bad = MagicMock()
+        bad.bars.return_value = pd.DataFrame()
+        good = MagicMock()
+        good.server = ('2.2.2.2', 7709)
+        good.bars.return_value = pd.DataFrame({'close': [10.0]})
+
+        adapter = MootdxAdapter(
+            'mootdx',
+            {
+                'timeout': 1,
+                'servers': [('1.1.1.1', 7709), ('2.2.2.2', 7709)],
+                'probe_symbols': ['600000'],
+            },
+        )
+        with patch(
+                'StockDataMaster.adapters.mootdx_adapter.Quotes.factory',
+                side_effect=[bad, good]):
+            assert adapter.connect() is True
+
+        assert bad.close.called
+        assert adapter.client is good
+        assert adapter._server_index == 1
+
+    def test_empty_symbol_does_not_rotate_when_node_probe_is_healthy(self):
+        from StockDataMaster.adapters.mootdx_adapter import MootdxAdapter
+
+        client = MagicMock()
+        client.bars.side_effect = [
+            pd.DataFrame(),
+            pd.DataFrame({'close': [10.0]}),
+        ]
+        adapter = MootdxAdapter(
+            'mootdx', {'probe_symbols': ['600000']}
+        )
+        adapter.client = client
+        adapter.is_connected = True
+        adapter._recover_connection = MagicMock()
+
+        assert adapter.get_kline('600001') is None
+        adapter._recover_connection.assert_not_called()
+
+
+class TestXtquantDataRepair:
+    def test_drop_invalid_rows_keeps_valid_history(self):
+        from StockDataMaster.adapters.xtquant_adapter import XtquantAdapter
+
+        adapter = XtquantAdapter('xtquant', {})
+        df = pd.DataFrame([
+            {'date': '2026-01-01', 'open': 0, 'high': 0, 'low': 0,
+             'close': 0, 'volume': 0},
+            {'date': '2026-01-02', 'open': 10, 'high': 11, 'low': 9,
+             'close': 10.5, 'volume': 100},
+            {'date': '2026-01-03', 'open': 10, 'high': 11, 'low': 9,
+             'close': 10.5, 'volume': -1},
+        ])
+
+        result = adapter._drop_invalid_kline_rows(df, '600519', 'd')
+
+        assert result['date'].tolist() == ['2026-01-02']
+
+
+class TestTushareRetry:
+    def test_retryable_error_retries_then_succeeds(self, monkeypatch):
+        from StockDataMaster.adapters.tushare_adapter import TushareAdapter
+
+        adapter = TushareAdapter(
+            'tushare',
+            {'token': 'test', 'retry_times': 2, 'retry_delay': 0},
+        )
+        call = MagicMock(
+            side_effect=[RuntimeError('429 too many requests'), 'ok']
+        )
+        monkeypatch.setattr(time, 'sleep', lambda _: None)
+
+        assert adapter._call(call) == 'ok'
+        assert call.call_count == 2
+
+    def test_permission_error_does_not_retry(self):
+        from StockDataMaster.adapters.tushare_adapter import TushareAdapter
+
+        adapter = TushareAdapter(
+            'tushare',
+            {'token': 'test', 'retry_times': 2, 'retry_delay': 0},
+        )
+        call = MagicMock(side_effect=RuntimeError('没有接口访问权限'))
+
+        with pytest.raises(RuntimeError):
+            adapter._call(call)
+        assert call.call_count == 1

@@ -6,6 +6,9 @@
       "priority": 1,
       "timeout": 10,
       "retry_times": 2,
+      "retry_delay": 1.0,
+      "retry_backoff_factor": 2.0,
+      "max_retry_delay": 8.0,
       "token": "${TUSHARE_TOKEN}",
       "use_for": ["kline_day"],
       "use_adj_factor": false,
@@ -38,6 +41,9 @@
       "priority": 3,
       "timeout": 5,
       "retry_times": 3,
+      "server_cooldown_seconds": 600,
+      "max_server_candidates": 1,
+      "probe_symbols": ["000001", "510300"],
       "use_for": ["kline_day", "kline_minute", "tick"],
       "adjustflag": "qfq",
       "roles": {
@@ -94,7 +100,8 @@
     "interval_seconds": 60,
     "response_time_threshold": 5.0,
     "consecutive_failures_threshold": 3,
-    "data_freshness_days": 3
+    "data_freshness_days": 3,
+    "max_failure_interval_seconds": 900
   },
   "hot_switch": {
     "enabled": true,

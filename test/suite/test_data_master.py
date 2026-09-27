@@ -244,6 +244,26 @@ def test_singleton_behavior(tmp_path):
     assert dm1 is dm2, "单例模式应返回同一实例"
 
 
+def test_init_keeps_adapter_after_initial_connection_failure():
+    from StockDataMaster.data_master import StockDataMaster
+
+    dm = StockDataMaster.__new__(StockDataMaster)
+    dm.config = MagicMock()
+    dm.config.get_enabled_sources.return_value = ['mootdx']
+    dm.config.get_data_source_config.return_value = {'enabled': True}
+    dm.logger = MagicMock()
+    dm.adapters = {}
+    adapter = MagicMock()
+    adapter.connect.return_value = False
+
+    with patch(
+            'StockDataMaster.data_master.AdapterFactory.create_adapter',
+            return_value=adapter):
+        dm._init_adapters()
+
+    assert dm.adapters['mootdx'] is adapter
+
+
 # ─── 测试：时段判断 ────────────────────────────────────────────────────────────
 
 class TestTimeSlot:
@@ -502,26 +522,12 @@ class TestGetStockName:
         mock_baostock = MagicMock()
         dm.adapters['baostock'] = mock_baostock
 
-        # Mock baostock 模块
-        mock_bs = MagicMock()
-        mock_login_result = MagicMock()
-        mock_login_result.error_code = '0'
-        mock_bs.login.return_value = mock_login_result
+        mock_baostock.get_stock_name.return_value = '贵州茅台'
+        result = dm.get_stock_name('600519')
 
-        mock_rs = MagicMock()
-        mock_rs.error_code = '0'
-        mock_rs.next.side_effect = [True, False]
-        mock_rs.get_row_data.return_value = ['sh.600519', '贵州茅台', 'other', 'fields']
-        mock_bs.query_stock_basic.return_value = mock_rs
-
-        with patch.dict('sys.modules', {'baostock': mock_bs}):
-            result = dm.get_stock_name('600519')
-
-            # 验证返回值
-            assert result == '贵州茅台'
-
-            # 验证缓存写入
-            assert dm._stock_name_cache.get('600519') == '贵州茅台'
+        assert result == '贵州茅台'
+        assert dm._stock_name_cache.get('600519') == '贵州茅台'
+        mock_baostock.get_stock_name.assert_called_once_with('600519')
 
     def test_all_fail_returns_code(self, dm_with_mocks):
         """所有级别失败返回代码本身"""
@@ -532,21 +538,11 @@ class TestGetStockName:
         mock_xtquant.is_connected = False
         dm.adapters['xtquant'] = mock_xtquant
 
-        # Mock baostock 模块（查询失败）
-        mock_bs = MagicMock()
-        mock_login_result = MagicMock()
-        mock_login_result.error_code = '0'
-        mock_bs.login.return_value = mock_login_result
-
-        mock_rs = MagicMock()
-        mock_rs.error_code = '1'  # 错误码
-        mock_bs.query_stock_basic.return_value = mock_rs
-
-        with patch.dict('sys.modules', {'baostock': mock_bs}):
-            result = dm.get_stock_name('600519')
-
-            # 应返回代码本身
-            assert result == '600519'
+        mock_baostock = MagicMock()
+        mock_baostock.get_stock_name.return_value = None
+        dm.adapters['baostock'] = mock_baostock
+        result = dm.get_stock_name('600519')
+        assert result == '600519'
 
     def test_code_format_normalization(self, dm_with_mocks):
         """代码格式标准化"""
@@ -574,38 +570,17 @@ class TestGetStockName:
         mock_baostock = MagicMock()
         dm.adapters['baostock'] = mock_baostock
 
-        # Mock baostock 模块（连续失败）
-        mock_bs = MagicMock()
-        mock_login_result = MagicMock()
-        mock_login_result.error_code = '0'
-        mock_bs.login.return_value = mock_login_result
+        mock_baostock.get_stock_name.return_value = None
+        for i in range(3):
+            result = dm.get_stock_name(f'60051{i}')
+            assert result == f'60051{i}'
 
-        mock_rs = MagicMock()
-        mock_rs.error_code = '1'  # 失败
-        mock_bs.query_stock_basic.return_value = mock_rs
-
-        with patch.dict('sys.modules', {'baostock': mock_bs}):
-            # 连续失败 3 次
-            for i in range(3):
-                result = dm.get_stock_name(f'60051{i}')
-                assert result == f'60051{i}'  # 返回代码本身
-
-            # 验证失败计数
-            assert dm._baostock_consecutive_failures == 3
-
-            # 验证进入冷却期
-            import time
-            assert dm._baostock_cooldown_until > time.time()
-
-            # 记录当前 query_stock_basic 调用次数
-            call_count_before = mock_bs.query_stock_basic.call_count
-
-            # 冷却期内再次调用，应跳过 baostock
-            result = dm.get_stock_name('600519')
-            assert result == '600519'
-
-            # 验证 baostock 没有被调用（因为在冷却期）
-            assert mock_bs.query_stock_basic.call_count == call_count_before
+        assert dm._baostock_consecutive_failures == 3
+        import time
+        assert dm._baostock_cooldown_until > time.time()
+        call_count_before = mock_baostock.get_stock_name.call_count
+        assert dm.get_stock_name('600519') == '600519'
+        assert mock_baostock.get_stock_name.call_count == call_count_before
 
     def test_baostock_cooldown_reset_on_success(self, dm_with_mocks):
         """baostock 成功后重置失败计数"""
@@ -620,30 +595,13 @@ class TestGetStockName:
         mock_baostock = MagicMock()
         dm.adapters['baostock'] = mock_baostock
 
-        # 先失败 2 次
-        mock_bs = MagicMock()
-        mock_login_result = MagicMock()
-        mock_login_result.error_code = '0'
-        mock_bs.login.return_value = mock_login_result
+        mock_baostock.get_stock_name.side_effect = [
+            None, None, '贵州茅台'
+        ]
+        dm.get_stock_name('600510')
+        dm.get_stock_name('600511')
+        assert dm._baostock_consecutive_failures == 2
 
-        mock_rs_fail = MagicMock()
-        mock_rs_fail.error_code = '1'
-        mock_bs.query_stock_basic.return_value = mock_rs_fail
-
-        with patch.dict('sys.modules', {'baostock': mock_bs}):
-            dm.get_stock_name('600510')
-            dm.get_stock_name('600511')
-            assert dm._baostock_consecutive_failures == 2
-
-            # 第 3 次成功
-            mock_rs_success = MagicMock()
-            mock_rs_success.error_code = '0'
-            mock_rs_success.next.side_effect = [True, False]
-            mock_rs_success.get_row_data.return_value = ['sh.600519', '贵州茅台']
-            mock_bs.query_stock_basic.return_value = mock_rs_success
-
-            result = dm.get_stock_name('600519')
-            assert result == '贵州茅台'
-
-            # 验证失败计数被重置
-            assert dm._baostock_consecutive_failures == 0
+        result = dm.get_stock_name('600519')
+        assert result == '贵州茅台'
+        assert dm._baostock_consecutive_failures == 0

@@ -4,6 +4,8 @@ Mootdx数据源适配器
 使用mootdx库获取通达信数据,主要用于K线和实时行情
 """
 
+import threading
+import time
 from typing import Optional, Dict, Any
 import pandas as pd
 from mootdx.quotes import Quotes
@@ -33,25 +35,191 @@ class MootdxAdapter(DataSourceAdapter):
     def __init__(self, name: str, config: Dict[str, Any]):
         super().__init__(name, config)
         self.client = None
+        self.timeout = config.get('timeout', 5)
+        self.server_cooldown = config.get('server_cooldown_seconds', 600)
+        self.probe_symbols = config.get(
+            'probe_symbols', ['000001', '510300']
+        )
+        self.max_server_candidates = config.get('max_server_candidates', 1)
+        self._lock = threading.RLock()
+        self._servers = []
+        self._server_index = -1
+        self._server_cooldown_until = {}
+        self._auto_discovery_attempted = False
+
+    @staticmethod
+    def _normalize_server(server):
+        if isinstance(server, (list, tuple)) and len(server) >= 2:
+            return str(server[-2]), int(server[-1])
+        return None
+
+    def _discover_servers(self):
+        """获取可用行情节点，配置节点优先，自动探测作为补充。"""
+        if self._servers:
+            return self._servers
+
+        candidates = []
+        configured = self.config.get('servers', [])
+        single = self.config.get('server')
+        if single:
+            configured = [single] + list(configured)
+        for item in configured:
+            server = self._normalize_server(item)
+            if server and server not in candidates:
+                candidates.append(server)
+
+        if not candidates:
+            try:
+                from mootdx import config as mootdx_config
+                cached = self._normalize_server(
+                    mootdx_config.get('BESTIP').get('HQ')
+                )
+                if cached:
+                    candidates.append(cached)
+            except Exception as e:
+                self.logger.debug(f"{self.name} 读取缓存节点失败: {e}")
+
+        # 正常路径优先使用显式配置节点或业务验证后缓存的 BESTIP。
+        self._servers = candidates or [None]
+        return self._servers
+
+    def _discover_remote_servers(self):
+        """仅在现有节点真实取数失败后执行一次公网节点探测。"""
+        if self._auto_discovery_attempted:
+            return False
+        self._auto_discovery_attempted = True
+        discovered = []
+        try:
+            from mootdx import config as mootdx_config
+            items = [mootdx_config.get('BESTIP').get('HQ')]
+            items.extend(
+                mootdx_config.get('SERVER').get('HQ', [])[
+                    :self.max_server_candidates
+                ]
+            )
+            for item in items:
+                server = self._normalize_server(item)
+                if server and server not in self._servers:
+                    discovered.append(server)
+                    if len(discovered) >= self.max_server_candidates:
+                        break
+        except Exception as e:
+            self.logger.debug(f"{self.name} 读取备用行情节点失败: {e}")
+        if discovered:
+            self._servers.extend(discovered)
+            return True
+        return False
+
+    def _close_client(self):
+        client, self.client = self.client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+        self.is_connected = False
+
+    def _probe_client(self, client) -> bool:
+        """用多个市场标的验证节点是否真的能返回行情。"""
+        for symbol in self.probe_symbols:
+            try:
+                df = client.bars(
+                    symbol=self.normalize_code(symbol),
+                    frequency=self.FREQ_MAP['d'],
+                    offset=5,
+                    adjust='qfq',
+                )
+                if df is not None and not df.empty:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _connect_from(self, start_index=0) -> bool:
+        servers = self._discover_servers()
+        now = time.monotonic()
+        for step in range(len(servers)):
+            index = (start_index + step) % len(servers)
+            server = servers[index]
+            if self._server_cooldown_until.get(server, 0) > now:
+                continue
+            try:
+                client = Quotes.factory(
+                    market='std',
+                    server=server,
+                    timeout=self.timeout,
+                    auto_retry=True,
+                    raise_exception=True,
+                )
+                if not self._probe_client(client):
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    self._server_cooldown_until[server] = (
+                        time.monotonic() + self.server_cooldown
+                    )
+                    continue
+                self.client = client
+                self._server_index = index
+                self.is_connected = True
+                self.last_error = None
+                self.logger.info(
+                    f"{self.name} 连接成功，节点: "
+                    f"{getattr(client, 'server', server)}"
+                )
+                return True
+            except Exception as e:
+                self.last_error = str(e)
+                self._server_cooldown_until[server] = (
+                    time.monotonic() + self.server_cooldown
+                )
+        old_count = len(servers)
+        if self._discover_remote_servers():
+            return self._connect_from(old_count)
+        self._close_client()
+        return False
 
     def connect(self) -> bool:
-        """连接Mootdx数据源"""
-        try:
-            self.client = Quotes.factory('std')  # 使用标准版通达信
-            self.is_connected = True
-            self.logger.info(f"{self.name} 连接成功")
-            return True
-        except Exception as e:
-            self.logger.error(f"{self.name} 连接失败: {e}")
-            self.last_error = str(e)
-            self.is_connected = False
-            return False
+        """连接并验证 Mootdx 数据源。"""
+        with self._lock:
+            if self.client is not None and self._probe_client(self.client):
+                self.is_connected = True
+                return True
+            start = self._server_index + 1 if self._server_index >= 0 else 0
+            self._close_client()
+            ok = self._connect_from(start)
+            if not ok:
+                self.logger.error(
+                    f"{self.name} 连接失败: 所有行情节点均无法返回测试数据"
+                )
+            return ok
 
     def disconnect(self):
         """断开连接"""
-        self.client = None
-        self.is_connected = False
-        self.logger.info(f"{self.name} 已断开连接")
+        with self._lock:
+            self._close_client()
+            self.logger.info(f"{self.name} 已断开连接")
+
+    def _recover_connection(self) -> bool:
+        """将当前节点置于冷却期并切换到下一个节点。"""
+        servers = self._discover_servers()
+        if 0 <= self._server_index < len(servers):
+            current = servers[self._server_index]
+            self._server_cooldown_until[current] = (
+                time.monotonic() + self.server_cooldown
+            )
+        start = self._server_index + 1 if self._server_index >= 0 else 0
+        self._close_client()
+        return self._connect_from(start)
+
+    def _bars_once(self, code, frequency, count, adjust):
+        return self.client.bars(
+            symbol=code,
+            frequency=frequency,
+            offset=count,
+            adjust=adjust,
+        )
 
     def get_kline(
         self,
@@ -76,33 +244,43 @@ class MootdxAdapter(DataSourceAdapter):
         Returns:
             DataFrame
         """
-        if not self.is_connected:
-            if not self.connect():
+        with self._lock:
+            if not self.is_connected and not self.connect():
                 return None
+            try:
+                code = self.normalize_code(code)
+                if freq not in self.FREQ_MAP:
+                    self.logger.error(f"不支持的频率: {freq}")
+                    return None
+                mootdx_freq = self.FREQ_MAP[freq]
+                count = count or 800
+                df = self._bars_once(code, mootdx_freq, count, adjust)
+                if df is None or df.empty:
+                    # 标的无数据可能是正常情况；仅当节点探针也失败时切换节点。
+                    if self._probe_client(self.client):
+                        self.logger.debug(f"Mootdx标的无数据: {code}")
+                        return None
+                    if not self._recover_connection():
+                        self.logger.warning(f"Mootdx节点不可用: {code}")
+                        return None
+                    df = self._bars_once(code, mootdx_freq, count, adjust)
+            except Exception as e:
+                self.last_error = str(e)
+                self.error_count += 1
+                if not self._recover_connection():
+                    self.logger.error(f"Mootdx获取K线失败 {code}: {e}")
+                    return None
+                try:
+                    df = self._bars_once(code, mootdx_freq, count, adjust)
+                except Exception as retry_error:
+                    self.last_error = str(retry_error)
+                    self.logger.error(
+                        f"Mootdx切换节点后仍无法获取K线 {code}: {retry_error}"
+                    )
+                    return None
 
         try:
             # 标准化代码
-            code = self.normalize_code(code)
-
-            # 转换频率
-            if freq not in self.FREQ_MAP:
-                self.logger.error(f"不支持的频率: {freq}")
-                return None
-
-            mootdx_freq = self.FREQ_MAP[freq]
-
-            # 默认获取数量
-            if count is None:
-                count = 800  # mootdx默认值
-
-            # 获取数据
-            df = self.client.bars(
-                symbol=code,
-                frequency=mootdx_freq,
-                offset=count,
-                adjust=adjust
-            )
-
             if df is None or df.empty:
                 self.logger.warning(f"Mootdx未获取到数据: {code}")
                 return None
@@ -195,16 +373,30 @@ class MootdxAdapter(DataSourceAdapter):
         Returns:
             实时行情字典
         """
-        if not self.is_connected:
-            if not self.connect():
+        with self._lock:
+            if not self.is_connected and not self.connect():
                 return None
+            code = self.normalize_code(code)
+            try:
+                quotes = self.client.quotes([code])
+                if quotes is None or len(quotes) == 0:
+                    if self._probe_client(self.client):
+                        return None
+                    if not self._recover_connection():
+                        return None
+                    quotes = self.client.quotes([code])
+            except Exception as e:
+                self.last_error = str(e)
+                self.error_count += 1
+                if not self._recover_connection():
+                    return None
+                try:
+                    quotes = self.client.quotes([code])
+                except Exception as retry_error:
+                    self.last_error = str(retry_error)
+                    return None
 
         try:
-            code = self.normalize_code(code)
-
-            # 获取实时行情
-            quotes = self.client.quotes([code])
-
             # 处理DataFrame或列表返回
             if isinstance(quotes, pd.DataFrame):
                 if quotes.empty:
@@ -243,3 +435,32 @@ class MootdxAdapter(DataSourceAdapter):
             self.last_error = str(e)
             self.error_count += 1
             return None
+
+    def health_check(self) -> Dict[str, Any]:
+        """直接探测 Mootdx 节点，不复用业务缓存。"""
+        started = time.monotonic()
+        result = {
+            'status': 'ok',
+            'response_time': 0.0,
+            'data_freshness': True,
+            'error_message': None,
+        }
+        with self._lock:
+            healthy = (
+                self.client is not None
+                and self.is_connected
+                and self._probe_client(self.client)
+            )
+            if not healthy:
+                healthy = self._recover_connection()
+        result['response_time'] = time.monotonic() - started
+        if not healthy:
+            result['status'] = 'error'
+            result['error_message'] = '所有行情节点均无法返回测试数据'
+            return result
+        if result['response_time'] > self.config.get('timeout', 5):
+            result['status'] = 'warning'
+            result['error_message'] = (
+                f'响应时间过长: {result["response_time"]:.2f}秒'
+            )
+        return result
