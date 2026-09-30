@@ -396,6 +396,30 @@ class StockDataMaster:
                         self.logger.debug(f"{vs_name}未返回数据,尝试下一个校验源")
                         continue
 
+                    # 收益率一致只能证明重叠区间正确，不能证明最新数据有效。
+                    # 校验源必须明确覆盖主数据待缓存区间的最新实际交易日。
+                    required_end = pd.to_datetime(
+                        str(incremental_end), errors='coerce'
+                    )
+                    validation_dates = pd.to_datetime(
+                        vs_df['date'].astype(str), errors='coerce'
+                    ).dropna().dt.normalize()
+                    if pd.isna(required_end) or validation_dates.empty:
+                        self.logger.warning(
+                            f"{vs_name}校验数据日期无效,尝试下一个校验源"
+                        )
+                        continue
+
+                    required_end = required_end.normalize()
+                    if required_end not in set(validation_dates):
+                        validation_end = validation_dates.max()
+                        self.logger.warning(
+                            f"{vs_name}校验数据未覆盖最新交易日"
+                            f"{required_end.date()}(最新={validation_end.date()}),"
+                            f"尝试下一个校验源"
+                        )
+                        continue
+
                     # 检查覆盖率
                     vs_dates = set(vs_df['date'].astype(str))
                     overlap = len(vs_dates & incremental_dates)

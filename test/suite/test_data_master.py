@@ -422,6 +422,81 @@ def test_try_cache_kline_fast_first_fallback(dm_with_mocks):
             assert call_args[0][3] == 'baostock'  # validation_source
 
 
+def test_try_cache_kline_stale_validation_source_falls_back(dm_with_mocks):
+    """校验源未覆盖主数据最新交易日时，应继续尝试下一个校验源。"""
+    dm, _, _ = dm_with_mocks
+    primary_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 100.0, 'high': 101.0, 'low': 99.0,
+         'close': 100.0, 'volume': 1000, 'amount': 100000},
+        {'date': '2024-01-02', 'open': 103.0, 'high': 104.0, 'low': 102.0,
+         'close': 103.0, 'volume': 1200, 'amount': 123600},
+        {'date': '2024-01-03', 'open': 106.0, 'high': 107.0, 'low': 105.0,
+         'close': 106.0, 'volume': 1400, 'amount': 148400},
+    ])
+    primary_df.attrs['source'] = 'tushare'
+
+    mock_xtquant = MagicMock()
+    mock_xtquant.is_connected = True
+    mock_xtquant.get_kline.return_value = primary_df.iloc[:2].copy()
+    dm.adapters['xtquant'] = mock_xtquant
+
+    mock_baostock = MagicMock()
+    mock_baostock.is_connected = True
+    mock_baostock.get_kline.return_value = primary_df.copy()
+    dm.adapters['baostock'] = mock_baostock
+
+    with patch.object(
+            dm.config, 'get_sources_by_role',
+            return_value=['xtquant', 'baostock']), patch.object(
+                dm.cache_manager, 'save_to_cache') as mock_save:
+        dm._try_cache_kline(
+            '600519', primary_df.copy(),
+            '2024-01-01', '2024-01-03', None, 'qfq',
+        )
+
+    mock_xtquant.get_kline.assert_called_once()
+    mock_baostock.get_kline.assert_called_once()
+    assert mock_save.call_args[0][3] == 'baostock'
+
+
+def test_try_cache_kline_all_stale_validation_sources_fail(dm_with_mocks):
+    """所有校验源都过期时，不应把主数据标记为双源校验通过。"""
+    dm, _, _ = dm_with_mocks
+    primary_df = pd.DataFrame([
+        {'date': '2024-01-01', 'open': 100.0, 'high': 101.0, 'low': 99.0,
+         'close': 100.0, 'volume': 1000, 'amount': 100000},
+        {'date': '2024-01-02', 'open': 103.0, 'high': 104.0, 'low': 102.0,
+         'close': 103.0, 'volume': 1200, 'amount': 123600},
+        {'date': '2024-01-03', 'open': 106.0, 'high': 107.0, 'low': 105.0,
+         'close': 106.0, 'volume': 1400, 'amount': 148400},
+    ])
+    primary_df.attrs['source'] = 'tushare'
+    stale_df = primary_df.iloc[:2].copy()
+
+    mock_xtquant = MagicMock()
+    mock_xtquant.is_connected = True
+    mock_xtquant.get_kline.return_value = stale_df.copy()
+    dm.adapters['xtquant'] = mock_xtquant
+
+    mock_baostock = MagicMock()
+    mock_baostock.is_connected = True
+    mock_baostock.get_kline.return_value = stale_df.copy()
+    dm.adapters['baostock'] = mock_baostock
+
+    with patch.object(
+            dm.config, 'get_sources_by_role',
+            return_value=['xtquant', 'baostock']), patch.object(
+                dm.cache_manager, 'save_to_cache') as mock_save:
+        dm._try_cache_kline(
+            '600519', primary_df.copy(),
+            '2024-01-01', '2024-01-03', None, 'qfq',
+        )
+
+    mock_xtquant.get_kline.assert_called_once()
+    mock_baostock.get_kline.assert_called_once()
+    mock_save.assert_not_called()
+
+
 def test_try_cache_kline_fast_first_all_fail(dm_with_mocks):
     """串行短路校验: 所有校验源都失败"""
     dm, mock_tushare, mock_mootdx = dm_with_mocks
